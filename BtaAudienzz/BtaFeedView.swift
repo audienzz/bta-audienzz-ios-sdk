@@ -81,9 +81,12 @@ public final class BtaFeedView: UIView {
         debug: Bool = false,
         mockRecommendations: Bool = false
     ) {
-        // Suppress reload when returning from the ad WebView for the same feed.
+        // Suppress reload when returning from the ad/article WebView for the same feed.
+        // Still re-attach bridge handlers — destroy() may have removed them when the
+        // fullscreen modal caused viewWillDisappear to fire on the parent view controller.
         if suppressNextLoad && btaFeedId == currentFeedId {
             suppressNextLoad = false
+            rebuildBridge(btaFeedId: btaFeedId)
             return
         }
         suppressNextLoad = false
