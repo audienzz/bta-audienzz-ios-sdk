@@ -74,10 +74,13 @@ public final class BtaFeedView: UIView {
     ///
     /// - Parameters:
     ///   - btaFeedId: The feed identifier provided by Audienzz.
+    ///   - pageUrl: The canonical URL of the article/page hosting the feed.
+    ///              Used by the feed widget for contextual recommendations.
     ///   - debug: Enable feed debug logging (**do not use in production**).
     ///   - mockRecommendations: Show mock recommendations (**do not use in production**).
     public func load(
         btaFeedId: String,
+        pageUrl: String,
         debug: Bool = false,
         mockRecommendations: Bool = false
     ) {
@@ -100,7 +103,7 @@ public final class BtaFeedView: UIView {
         startViewabilityTimer()
         rebuildBridge(btaFeedId: btaFeedId)
 
-        let html = buildHTML(feedId: btaFeedId, debug: debug, mockRecommendations: mockRecommendations)
+        let html = buildHTML(feedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations)
         webView.loadHTMLString(html, baseURL: URL(string: Self.cdnBaseURL))
     }
 
@@ -239,7 +242,7 @@ public final class BtaFeedView: UIView {
 
     // MARK: - HTML template
 
-    private func buildHTML(feedId: String, debug: Bool, mockRecommendations: Bool) -> String {
+    private func buildHTML(feedId: String, pageUrl: String, debug: Bool, mockRecommendations: Bool) -> String {
         let debugLine = debug ? "debug: true," : ""
         let mockLine  = mockRecommendations ? "mockRecommendations: true," : ""
 
@@ -265,6 +268,7 @@ public final class BtaFeedView: UIView {
                 window.adnzBtaFeed.queue.push(function() {
                     window.adnzBtaFeed.start({
                         btaFeedId: '\(feedId)',
+                        url: '\(pageUrl)',
                         webview: true,
                         \(debugLine)
                         \(mockLine)
@@ -348,7 +352,7 @@ public final class BtaFeedView: UIView {
 
     // MARK: - Constants
 
-    static let cdnBaseURL = "https://dev-cdn.adnz.co/"
+    static let cdnBaseURL = "https://cdn.adnz.co/"
 }
 
 // MARK: - WKNavigationDelegate

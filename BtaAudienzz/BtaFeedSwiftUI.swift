@@ -28,6 +28,7 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
     // MARK: - Properties
 
     let btaFeedId: String
+    let pageUrl: String
     var debug: Bool = false
     var mockRecommendations: Bool = false
     var onArticleClick: ((ArticleClickPayload) -> Bool)?
@@ -37,8 +38,9 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
 
     // MARK: - Init
 
-    public init(btaFeedId: String) {
+    public init(btaFeedId: String, pageUrl: String) {
         self.btaFeedId = btaFeedId
+        self.pageUrl = pageUrl
     }
 
     // MARK: - UIViewRepresentable
@@ -51,12 +53,15 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
         uiView.delegate = context.coordinator
         context.coordinator.parent = self
 
-        // Load only when the feed ID changes or on first appearance — not on every
-        // SwiftUI state change (which would cause constant reloads).
-        if context.coordinator.lastLoadedFeedId != btaFeedId {
+        // Reload when the feed ID or page URL changes, but not on every SwiftUI
+        // state change (which would cause constant reloads).
+        if context.coordinator.lastLoadedFeedId != btaFeedId
+            || context.coordinator.lastLoadedPageUrl != pageUrl {
             context.coordinator.lastLoadedFeedId = btaFeedId
+            context.coordinator.lastLoadedPageUrl = pageUrl
             uiView.load(
                 btaFeedId: btaFeedId,
+                pageUrl: pageUrl,
                 debug: debug,
                 mockRecommendations: mockRecommendations
             )
@@ -77,6 +82,7 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
 
         var parent: BtaFeedSwiftUI
         var lastLoadedFeedId: String?
+        var lastLoadedPageUrl: String?
 
         init(_ parent: BtaFeedSwiftUI) {
             self.parent = parent

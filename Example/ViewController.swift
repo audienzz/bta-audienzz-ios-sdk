@@ -5,6 +5,9 @@ final class ViewController: UIViewController {
 
     private static let btaFeedId = "92692c82-cb38-4164-b77c-e89d56cb486d"
 
+    /** Replace with the canonical URL of the article page hosting this feed. */
+    private static let pageUrl = "https://www.example.com/article/sample-article"
+
     // MARK: - Views
 
     private let scrollView = UIScrollView()
@@ -24,11 +27,7 @@ final class ViewController: UIViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        btaFeedView.load(
-            btaFeedId: Self.btaFeedId,
-            debug: true,
-            mockRecommendations: true
-        )
+        btaFeedView.load(btaFeedId: Self.btaFeedId, pageUrl: Self.pageUrl, debug: true, mockRecommendations: true)
     }
 
     override func viewWillDisappear(_ animated: Bool) {

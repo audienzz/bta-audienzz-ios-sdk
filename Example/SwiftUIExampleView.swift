@@ -7,6 +7,9 @@ struct SwiftUIExampleView: View {
 
     private static let btaFeedId = "92692c82-cb38-4164-b77c-e89d56cb486d"
 
+    /** Replace with the canonical URL of the article page hosting this feed. */
+    private static let pageUrl = "https://www.example.com/article/sample-article"
+
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
@@ -18,8 +21,7 @@ struct SwiftUIExampleView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
 
-                // Remove debug/mockRecommendations in production.
-                BtaFeedSwiftUI(btaFeedId: Self.btaFeedId)
+                BtaFeedSwiftUI(btaFeedId: Self.btaFeedId, pageUrl: Self.pageUrl)
                     .debug(true)
                     .mockRecommendations(true)
                     .onArticleClick { payload in

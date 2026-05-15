@@ -4,7 +4,7 @@ import Foundation
 enum BtaEventSender {
 
     private static let endpoint = URL(
-        string: "https://dev-api.adnz.co/api/ws-event-ingester/submit/batch"
+        string: "https://api.adnz.co/api/ws-event-ingester/submit/batch"
     )!
 
     static func send(_ events: [BtaEvent]) {
