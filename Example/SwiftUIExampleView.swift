@@ -38,6 +38,9 @@ struct SwiftUIExampleView: View {
                     .onFeedError { error in
                         print("[SwiftUI] BTA feed error: \(error)")
                     }
+                    .onHeightChanged { height in
+                        print("[SwiftUI] BTA feed height updated: \(height)pt")
+                    }
                     .frame(maxWidth: .infinity) // SwiftUI modifiers go after all BtaFeedSwiftUI modifiers
             }
         }

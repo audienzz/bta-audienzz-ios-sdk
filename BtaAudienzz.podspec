@@ -11,7 +11,6 @@ Pod::Spec.new do |spec|
     spec.swift_version         = '5.7'
     spec.ios.deployment_target = '13.0'
 
-    spec.static_framework      = true
     spec.requires_arc          = true
 
     spec.source_files          = 'BtaAudienzz/**/*.swift'

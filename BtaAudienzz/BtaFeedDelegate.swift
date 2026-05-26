@@ -22,6 +22,18 @@ public protocol BtaFeedDelegate: AnyObject {
 
     /// Called when the feed encounters an error.
     func btaFeedView(_ view: BtaFeedView, didFailWithError error: String)
+
+    /// Called every time the feed's intrinsic height changes.
+    ///
+    /// Use this to invalidate the height of a `UITableViewCell` or
+    /// `UICollectionViewCell` that contains the feed view:
+    ///
+    /// ```swift
+    /// func btaFeedView(_ view: BtaFeedView, didUpdateHeight height: CGFloat) {
+    ///     tableView.performBatchUpdates(nil)   // triggers layoutIfNeeded on all cells
+    /// }
+    /// ```
+    func btaFeedView(_ view: BtaFeedView, didUpdateHeight height: CGFloat)
 }
 
 public extension BtaFeedDelegate {
@@ -29,4 +41,5 @@ public extension BtaFeedDelegate {
     func btaFeedView(_ view: BtaFeedView, didClickAd payload: AdClickPayload) -> Bool { false }
     func btaFeedViewDidLoad(_ view: BtaFeedView) {}
     func btaFeedView(_ view: BtaFeedView, didFailWithError error: String) {}
+    func btaFeedView(_ view: BtaFeedView, didUpdateHeight height: CGFloat) {}
 }

@@ -200,6 +200,7 @@ public final class BtaFeedView: UIView {
         invalidateIntrinsicContentSize()
         // Animate height changes to avoid a jarring snap.
         UIView.animate(withDuration: 0.15) { self.superview?.layoutIfNeeded() }
+        delegate?.btaFeedView(self, didUpdateHeight: height)
     }
 
     // MARK: - Viewable impression

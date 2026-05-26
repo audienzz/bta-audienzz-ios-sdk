@@ -35,6 +35,7 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
     var onAdClick: ((AdClickPayload) -> Bool)?
     var onFeedLoaded: (() -> Void)?
     var onFeedError: ((String) -> Void)?
+    var onHeightChanged: ((CGFloat) -> Void)?
 
     // MARK: - Init
 
@@ -103,6 +104,10 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
         public func btaFeedView(_ view: BtaFeedView, didFailWithError error: String) {
             parent.onFeedError?(error)
         }
+
+        public func btaFeedView(_ view: BtaFeedView, didUpdateHeight height: CGFloat) {
+            parent.onHeightChanged?(height)
+        }
     }
 }
 
@@ -133,5 +138,9 @@ public extension BtaFeedSwiftUI {
 
     func onFeedError(_ action: @escaping (String) -> Void) -> Self {
         var copy = self; copy.onFeedError = action; return copy
+    }
+
+    func onHeightChanged(_ action: @escaping (CGFloat) -> Void) -> Self {
+        var copy = self; copy.onHeightChanged = action; return copy
     }
 }

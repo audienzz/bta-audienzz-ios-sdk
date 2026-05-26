@@ -89,4 +89,8 @@ extension ViewController: BtaFeedDelegate {
     func btaFeedView(_ view: BtaFeedView, didFailWithError error: String) {
         print("[Example] BTA feed error: \(error)")
     }
+
+    func btaFeedView(_ view: BtaFeedView, didUpdateHeight height: CGFloat) {
+        print("[Example] BTA feed height updated: \(height)pt")
+    }
 }
