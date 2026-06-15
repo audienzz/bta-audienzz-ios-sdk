@@ -21,6 +21,7 @@ final class BtaJsBridge: NSObject {
         "onArticleImpression",
         "onContentHeightChanged",
         "onFeedReady",
+        "onFeedError",
     ]
 
     // MARK: Callbacks set by BtaFeedView
@@ -100,7 +101,11 @@ extension BtaJsBridge: WKScriptMessageHandler {
         switch message.name {
 
         case "onFeedReady":
-            onFeedLoaded?()
+            break // onFeedViewDidLoad fires on first non-zero height, not on JS SDK init
+
+        case "onFeedError":
+            let msg = message.body as? String ?? "Feed error"
+            onFeedError?(msg)
 
         case "onContentHeightChanged":
             // JS sends a plain number, not a dictionary.

@@ -27,6 +27,7 @@ final class ViewController: UIViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        print("[Example] load() called — waiting for content...")
         btaFeedView.load(btaFeedId: Self.btaFeedId, pageUrl: Self.pageUrl, debug: true, mockRecommendations: true)
     }
 
@@ -83,14 +84,14 @@ extension ViewController: BtaFeedDelegate {
     }
 
     func btaFeedViewDidLoad(_ view: BtaFeedView) {
-        print("[Example] BTA feed loaded successfully")
+        print("[Example] btaFeedViewDidLoad — content rendered (first non-zero height received)")
     }
 
     func btaFeedView(_ view: BtaFeedView, didFailWithError error: String) {
-        print("[Example] BTA feed error: \(error)")
+        print("[Example] didFailWithError — \(error)")
     }
 
     func btaFeedView(_ view: BtaFeedView, didUpdateHeight height: CGFloat) {
-        print("[Example] BTA feed height updated: \(height)pt")
+        print("[Example] didUpdateHeight — \(height)pt")
     }
 }

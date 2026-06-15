@@ -41,6 +41,7 @@ public final class BtaFeedView: UIView {
 
     private var currentFeedId: String?
     private var viewableImpressionFired = false
+    private var feedLoadedFired = false
 
     /// When `true`, the next ``load(btaFeedId:debug:mockRecommendations:)`` call with the same
     /// feed ID is skipped. Set just before presenting ``BtaWebViewController`` so the
@@ -96,6 +97,7 @@ public final class BtaFeedView: UIView {
 
         currentFeedId = btaFeedId
         viewableImpressionFired = false
+        feedLoadedFired = false
         updateHeight(0)
 
         BtaEventTracker.shared.track(BtaEvent(type: .pageView, btaFeedId: btaFeedId))
@@ -158,15 +160,18 @@ public final class BtaFeedView: UIView {
         let newBridge = BtaJsBridge(btaFeedId: btaFeedId, delegate: delegate, feedView: self)
 
         newBridge.onHeightChanged = { [weak self] height in
-            self?.updateHeight(height)
-            if self?.viewableImpressionFired == false {
-                self?.checkViewabilityAndTrack()
+            guard let self else { return }
+            self.updateHeight(height)
+            // Fire didLoad the first time real content appears (height > 0).
+            if height > 0 && !self.feedLoadedFired {
+                self.feedLoadedFired = true
+                self.delegate?.btaFeedViewDidLoad(self)
+            }
+            if !self.viewableImpressionFired {
+                self.checkViewabilityAndTrack()
             }
         }
-        newBridge.onFeedLoaded = { [weak self] in
-            guard let self else { return }
-            self.delegate?.btaFeedViewDidLoad(self)
-        }
+        newBridge.onFeedLoaded = { /* JS SDK initialised — btaFeedViewDidLoad fires on first non-zero height */ }
         newBridge.onFeedError = { [weak self] error in
             guard let self else { return }
             self.delegate?.btaFeedView(self, didFailWithError: error)
@@ -262,72 +267,81 @@ public final class BtaFeedView: UIView {
             </style>
         </head>
         <body>
-            <script async src="\(Self.cdnBaseURL)bta-feed/index.js"></script>
             <script type="text/javascript">
                 window.adnzBtaFeed = window.adnzBtaFeed || {};
                 window.adnzBtaFeed.queue = window.adnzBtaFeed.queue || [];
                 window.adnzBtaFeed.queue.push(function() {
-                    window.adnzBtaFeed.start({
-                        btaFeedId: '\(feedId)',
-                        url: '\(pageUrl)',
-                        webview: true,
-                        \(debugLine)
-                        \(mockLine)
-                        onArticleClick: function(payload) {
-                            payload.event.preventDefault();
-                            window.webkit.messageHandlers.onArticleClick.postMessage({
-                                article: payload.article,
-                                btaFeedId: payload.btaFeedId,
-                                index: payload.index
-                            });
-                        },
-                        onAdClick: function(payload) {
-                            payload.event.preventDefault();
-                            var unit = payload.adUnit || {};
-                            var ad   = unit.ad || {};
-                            var url = ad.clickUrl || ad.url
-                                   || unit.clickUrl || unit.url || unit.destinationUrl
-                                   || unit.targetUrl || unit.href
-                                   || payload.clickUrl || payload.url || '';
-                            window.webkit.messageHandlers.onAdClick.postMessage({
-                                adUnit: unit,
-                                url: url,
-                                btaFeedId: payload.btaFeedId,
-                                index: payload.index
-                            });
-                        },
-                        onNativeAdClick: function(payload) {
-                            payload.event.preventDefault();
-                            var unit = payload.adUnit || {};
-                            var ad   = unit.ad || {};
-                            var url = ad.clickUrl || ad.url
-                                   || unit.clickUrl || unit.url || unit.destinationUrl
-                                   || unit.targetUrl || unit.href
-                                   || payload.clickUrl || payload.url || '';
-                            window.webkit.messageHandlers.onNativeAdClick.postMessage({
-                                adUnit: unit,
-                                url: url,
-                                btaFeedId: payload.btaFeedId,
-                                index: payload.index
-                            });
-                        },
-                        onAdImpression: function(payload) {
-                            window.webkit.messageHandlers.onAdImpression.postMessage({
-                                adUnit: payload.adUnit,
-                                btaFeedId: payload.btaFeedId,
-                                index: payload.index
-                            });
-                        },
-                        onArticleImpression: function(payload) {
-                            window.webkit.messageHandlers.onArticleImpression.postMessage({
-                                article: payload.article,
-                                btaFeedId: payload.btaFeedId,
-                                index: payload.index
-                            });
-                        }
-                    });
-
-                    window.webkit.messageHandlers.onFeedReady.postMessage(null);
+                    try {
+                        window.adnzBtaFeed.start({
+                            btaFeedId: '\(feedId)',
+                            url: '\(pageUrl)',
+                            webview: true,
+                            \(debugLine)
+                            \(mockLine)
+                            onArticleClick: function(payload) {
+                                payload.event.preventDefault();
+                                window.webkit.messageHandlers.onArticleClick.postMessage({
+                                    article: payload.article,
+                                    btaFeedId: payload.btaFeedId,
+                                    index: payload.index
+                                });
+                            },
+                            onAdClick: function(payload) {
+                                payload.event.preventDefault();
+                                var unit = payload.adUnit || {};
+                                var ad   = unit.ad || {};
+                                var url = ad.clickUrl || ad.url
+                                       || unit.clickUrl || unit.url || unit.destinationUrl
+                                       || unit.targetUrl || unit.href
+                                       || payload.clickUrl || payload.url || '';
+                                window.webkit.messageHandlers.onAdClick.postMessage({
+                                    adUnit: unit,
+                                    url: url,
+                                    btaFeedId: payload.btaFeedId,
+                                    index: payload.index
+                                });
+                            },
+                            onNativeAdClick: function(payload) {
+                                payload.event.preventDefault();
+                                var unit = payload.adUnit || {};
+                                var ad   = unit.ad || {};
+                                var url = ad.clickUrl || ad.url
+                                       || unit.clickUrl || unit.url || unit.destinationUrl
+                                       || unit.targetUrl || unit.href
+                                       || payload.clickUrl || payload.url || '';
+                                window.webkit.messageHandlers.onNativeAdClick.postMessage({
+                                    adUnit: unit,
+                                    url: url,
+                                    btaFeedId: payload.btaFeedId,
+                                    index: payload.index
+                                });
+                            },
+                            onAdImpression: function(payload) {
+                                window.webkit.messageHandlers.onAdImpression.postMessage({
+                                    adUnit: payload.adUnit,
+                                    btaFeedId: payload.btaFeedId,
+                                    index: payload.index
+                                });
+                            },
+                            onArticleImpression: function(payload) {
+                                window.webkit.messageHandlers.onArticleImpression.postMessage({
+                                    article: payload.article,
+                                    btaFeedId: payload.btaFeedId,
+                                    index: payload.index
+                                });
+                            },
+                            onError: function(error) {
+                                var msg = error && error.message ? error.message
+                                        : (typeof error === 'string' ? error : 'Feed error');
+                                window.webkit.messageHandlers.onFeedError.postMessage(msg);
+                            }
+                        });
+                    } catch (e) {
+                        window.webkit.messageHandlers.onFeedError.postMessage(
+                            'Failed to start feed: ' + (e && e.message ? e.message : String(e))
+                        );
+                        return;
+                    }
 
                     function reportHeight() {
                         var h = document.documentElement.scrollHeight;
@@ -346,6 +360,8 @@ public final class BtaFeedView: UIView {
                     reportHeight();
                 });
             </script>
+            <script async src="\(Self.cdnBaseURL)bta-feed/index.js"
+                onerror="window.webkit.messageHandlers.onFeedError.postMessage('Failed to load BTA feed script')"></script>
         </body>
         </html>
         """
