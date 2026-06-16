@@ -31,6 +31,7 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
     let pageUrl: String
     var debug: Bool = false
     var mockRecommendations: Bool = false
+    var isDarkMode: Bool? = nil
     var onArticleClick: ((ArticleClickPayload) -> Bool)?
     var onAdClick: ((AdClickPayload) -> Bool)?
     var onFeedLoaded: (() -> Void)?
@@ -64,7 +65,8 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
                 btaFeedId: btaFeedId,
                 pageUrl: pageUrl,
                 debug: debug,
-                mockRecommendations: mockRecommendations
+                mockRecommendations: mockRecommendations,
+                isDarkMode: isDarkMode
             )
         }
     }
@@ -122,6 +124,10 @@ public extension BtaFeedSwiftUI {
 
     func mockRecommendations(_ enabled: Bool) -> Self {
         var copy = self; copy.mockRecommendations = enabled; return copy
+    }
+
+    func isDarkMode(_ value: Bool?) -> Self {
+        var copy = self; copy.isDarkMode = value; return copy
     }
 
     func onArticleClick(_ action: @escaping (ArticleClickPayload) -> Bool) -> Self {

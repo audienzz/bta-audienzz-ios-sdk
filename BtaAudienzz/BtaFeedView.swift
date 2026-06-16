@@ -79,11 +79,14 @@ public final class BtaFeedView: UIView {
     ///              Used by the feed widget for contextual recommendations.
     ///   - debug: Enable feed debug logging (**do not use in production**).
     ///   - mockRecommendations: Show mock recommendations (**do not use in production**).
+    ///   - isDarkMode: Override the color scheme: `true` forces dark theme, `false` forces
+    ///     light theme, `nil` (default) auto-detects from the system via `prefers-color-scheme`.
     public func load(
         btaFeedId: String,
         pageUrl: String,
         debug: Bool = false,
-        mockRecommendations: Bool = false
+        mockRecommendations: Bool = false,
+        isDarkMode: Bool? = nil
     ) {
         // Suppress reload when returning from the ad/article WebView for the same feed.
         // Still re-attach bridge handlers — destroy() may have removed them when the
@@ -105,7 +108,7 @@ public final class BtaFeedView: UIView {
         startViewabilityTimer()
         rebuildBridge(btaFeedId: btaFeedId)
 
-        let html = buildHTML(feedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations)
+        let html = buildHTML(feedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations, isDarkMode: isDarkMode)
         webView.loadHTMLString(html, baseURL: URL(string: Self.cdnBaseURL))
     }
 
@@ -248,9 +251,15 @@ public final class BtaFeedView: UIView {
 
     // MARK: - HTML template
 
-    private func buildHTML(feedId: String, pageUrl: String, debug: Bool, mockRecommendations: Bool) -> String {
+    private func buildHTML(feedId: String, pageUrl: String, debug: Bool, mockRecommendations: Bool, isDarkMode: Bool?) -> String {
         let debugLine = debug ? "debug: true," : ""
         let mockLine  = mockRecommendations ? "mockRecommendations: true," : ""
+        let darkLine: String
+        switch isDarkMode {
+        case .some(true):  darkLine = "forceDarkTheme: true,"
+        case .some(false): darkLine = ""
+        case .none:        darkLine = "isDarkThemeSupported: true,"
+        }
 
         // NOTE: On iOS, WKWebView JS height is already in UIKit points (no scale factor needed).
         // NOTE: Uses plain function() syntax and var for broad WebView compatibility.
@@ -278,6 +287,7 @@ public final class BtaFeedView: UIView {
                             webview: true,
                             \(debugLine)
                             \(mockLine)
+                            \(darkLine)
                             onArticleClick: function(payload) {
                                 payload.event.preventDefault();
                                 window.webkit.messageHandlers.onArticleClick.postMessage({

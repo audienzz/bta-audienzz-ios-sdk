@@ -3,7 +3,7 @@ import BtaAudienzz
 
 final class ViewController: UIViewController {
 
-    private static let btaFeedId = "92692c82-cb38-4164-b77c-e89d56cb486d"
+    private static let btaFeedId = "5b0a5694-de8d-4ddb-8bd4-a871bb55f09b"
 
     /** Replace with the canonical URL of the article page hosting this feed. */
     private static let pageUrl = "https://www.example.com/article/sample-article"
