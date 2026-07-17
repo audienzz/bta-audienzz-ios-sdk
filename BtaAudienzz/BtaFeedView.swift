@@ -48,6 +48,16 @@ public final class BtaFeedView: UIView {
     /// `viewWillAppear → load()` cycle on return does not reload the feed.
     private var suppressNextLoad = false
 
+    /// Stored so we can recover after a WKWebView content-process termination.
+    private struct LoadParams {
+        let btaFeedId: String
+        let pageUrl: String
+        let debug: Bool
+        let mockRecommendations: Bool
+        let isDarkMode: Bool?
+    }
+    private var lastLoadParams: LoadParams?
+
     private var viewabilityTimer: Timer?
     private var bridge: BtaJsBridge?
 
@@ -94,11 +104,22 @@ public final class BtaFeedView: UIView {
         if suppressNextLoad && btaFeedId == currentFeedId {
             suppressNextLoad = false
             rebuildBridge(btaFeedId: btaFeedId)
+            // Re-query current height from JS — the layout may have changed while the
+            // bridge was disconnected (e.g. images finished loading behind the modal).
+            webView.evaluateJavaScript("document.documentElement.scrollHeight") { [weak self] result, _ in
+                guard let self else { return }
+                let height: CGFloat
+                if let d = result as? Double { height = CGFloat(d) }
+                else if let n = result as? NSNumber { height = CGFloat(n.doubleValue) }
+                else { return }
+                if height > 0 { self.updateHeight(height) }
+            }
             return
         }
         suppressNextLoad = false
 
         currentFeedId = btaFeedId
+        lastLoadParams = LoadParams(btaFeedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations, isDarkMode: isDarkMode)
         viewableImpressionFired = false
         feedLoadedFired = false
         updateHeight(0)
@@ -115,7 +136,11 @@ public final class BtaFeedView: UIView {
     /// Release resources. Call from `viewWillDisappear` or the owning object's `deinit`.
     public func destroy() {
         stopViewabilityTimer()
-        webView.stopLoading()
+        // When navigating to an article, suppress in-progress resource loads being cancelled —
+        // the WebView should keep its content intact so returning looks seamless.
+        if !suppressNextLoad {
+            webView.stopLoading()
+        }
         removeBridgeHandlers()
         bridge = nil
     }
@@ -353,20 +378,36 @@ public final class BtaFeedView: UIView {
                         return;
                     }
 
+                    // Use the largest of documentElement/body scroll & offset heights so a
+                    // late-loading image or an un-collapsed bottom margin can't clip the feed.
                     function reportHeight() {
-                        var h = document.documentElement.scrollHeight;
+                        var doc = document.documentElement;
+                        var body = document.body;
+                        var h = Math.max(
+                            doc ? doc.scrollHeight : 0,
+                            doc ? doc.offsetHeight : 0,
+                            body ? body.scrollHeight : 0,
+                            body ? body.offsetHeight : 0
+                        );
                         window.webkit.messageHandlers.onContentHeightChanged.postMessage(h);
                     }
 
                     if (window.ResizeObserver) {
-                        new ResizeObserver(function() { reportHeight(); })
-                            .observe(document.documentElement);
+                        var ro = new ResizeObserver(function() { reportHeight(); });
+                        ro.observe(document.documentElement);
+                        if (document.body) ro.observe(document.body);
                     } else {
                         new MutationObserver(function() { reportHeight(); })
                             .observe(document.body, {
                                 childList: true, subtree: true, attributes: true
                             });
                     }
+                    // Re-measure once every image has decoded — recommendation teasers are
+                    // added dynamically, so their loads can expand the layout after first paint.
+                    window.addEventListener('load', function() { reportHeight(); });
+                    document.addEventListener('load', function(e) {
+                        if (e.target && e.target.tagName === 'IMG') reportHeight();
+                    }, true);
                     reportHeight();
                 });
             </script>
@@ -393,6 +434,25 @@ extension BtaFeedView: WKNavigationDelegate {
     ) {
         // All taps are handled by the JS bridge; suppress unexpected link navigation.
         decisionHandler(navigationAction.navigationType == .linkActivated ? .cancel : .allow)
+    }
+
+    public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        // iOS killed the WebContent process (memory pressure). Reload the feed transparently.
+        guard let params = lastLoadParams else { return }
+        suppressNextLoad = false
+        feedLoadedFired = false
+        viewableImpressionFired = false
+        updateHeight(0)
+        startViewabilityTimer()
+        rebuildBridge(btaFeedId: params.btaFeedId)
+        let html = buildHTML(
+            feedId: params.btaFeedId,
+            pageUrl: params.pageUrl,
+            debug: params.debug,
+            mockRecommendations: params.mockRecommendations,
+            isDarkMode: params.isDarkMode
+        )
+        webView.loadHTMLString(html, baseURL: URL(string: Self.cdnBaseURL))
     }
 }
 
