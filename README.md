@@ -95,7 +95,10 @@ class ArticleViewController: UIViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        btaFeedView.load(btaFeedId: "your-bta-feed-id")
+        btaFeedView.load(
+            btaFeedId: "your-bta-feed-id",
+            pageUrl: "https://your-site.com/the-article" // canonical URL of the hosting page
+        )
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -147,7 +150,7 @@ struct ArticleView: View {
 
                 // Your article content here...
 
-                BtaFeedSwiftUI(btaFeedId: "your-bta-feed-id")
+                BtaFeedSwiftUI(btaFeedId: "your-bta-feed-id", pageUrl: "https://your-site.com/the-article")
                     .onArticleClick { payload in
                         false  // false → SDK opens fullscreen browser
                     }
@@ -211,12 +214,36 @@ func btaFeedView(_ view: BtaFeedView, didClickArticle payload: ArticleClickPaylo
 
 ---
 
+## Refreshing content
+
+If your app refreshes page content on navigation (including back navigation) and you want
+fresh recommendations, call `reload()`. Unlike `load()`, it does **not** collapse the feed
+height to 0 first — the current height is kept and adjusts smoothly once the new content is
+measured, so there is no blank flash or layout jump.
+
+```swift
+btaFeedView.reload()   // replays the last load() parameters with fresh recommendations
+```
+
+> Note: the recommendation system currently serves fresh content on a **3-hour refresh
+> interval**, so calling `reload()` more often than that may return the same items.
+
+In SwiftUI, change the `.reloadToken(_:)` value to trigger the same in-place refresh:
+
+```swift
+BtaFeedSwiftUI(btaFeedId: "…", pageUrl: "…")
+    .reloadToken(refreshCount)   // increment refreshCount to refresh in place
+```
+
+---
+
 ## BtaFeedView API reference
 
 | Method / Property | Description |
 |-------------------|-------------|
 | `delegate: BtaFeedDelegate?` | Set or replace the event delegate |
-| `load(btaFeedId:debug:mockRecommendations:)` | Load the feed. Call from `viewWillAppear` |
+| `load(btaFeedId:pageUrl:debug:mockRecommendations:isDarkMode:)` | Load the feed. Call from `viewWillAppear` |
+| `reload()` | Refresh content in place without collapsing the height. Replays the last `load()` params |
 | `destroy()` | Release resources. Call from `viewWillDisappear` |
 
 ---
@@ -227,6 +254,8 @@ func btaFeedView(_ view: BtaFeedView, didClickArticle payload: ArticleClickPaylo
 |----------|------|-------------|
 | `.debug(Bool)` | `Bool` | Enable feed debug logging. **Do not use in production** |
 | `.mockRecommendations(Bool)` | `Bool` | Show mock content. **Do not use in production** |
+| `.isDarkMode(Bool?)` | `Bool?` | `true` forces dark, `false` forces light, `nil` auto-detects from the system |
+| `.reloadToken(AnyHashable?)` | `AnyHashable?` | Change to a new value to refresh content in place without collapsing the height |
 | `.onArticleClick { ArticleClickPayload -> Bool }` | closure | Return `false` for SDK default, `true` to handle yourself |
 | `.onAdClick { AdClickPayload -> Bool }` | closure | Return `false` for SDK default, `true` to handle yourself |
 | `.onFeedLoaded { }` | closure | Called when the feed widget initialises |

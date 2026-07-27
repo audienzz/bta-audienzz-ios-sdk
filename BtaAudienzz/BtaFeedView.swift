@@ -117,19 +117,50 @@ public final class BtaFeedView: UIView {
             return
         }
         suppressNextLoad = false
+        performLoad(
+            LoadParams(btaFeedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations, isDarkMode: isDarkMode),
+            resetHeight: true
+        )
+    }
 
-        currentFeedId = btaFeedId
-        lastLoadParams = LoadParams(btaFeedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations, isDarkMode: isDarkMode)
+    /// Reload the feed content in place — fetches fresh recommendations without first
+    /// collapsing the view height to 0, so there is no blank flash or layout jump. The
+    /// height adjusts smoothly once the new content reports its size.
+    ///
+    /// Use this when your app refreshes page content (e.g. on back navigation) and you
+    /// want new recommendations without the initial-load height reset. Replays the most
+    /// recent ``load(btaFeedId:pageUrl:debug:mockRecommendations:isDarkMode:)`` parameters;
+    /// no-op if `load` has never been called.
+    public func reload() {
+        guard let params = lastLoadParams else { return }
+        // Skip the suppress-on-return flag — this is an explicit content refresh.
+        suppressNextLoad = false
+        performLoad(params, resetHeight: false)
+    }
+
+    private func performLoad(_ params: LoadParams, resetHeight: Bool) {
+        currentFeedId = params.btaFeedId
+        lastLoadParams = params
         viewableImpressionFired = false
         feedLoadedFired = false
-        updateHeight(0)
+        // On a reload we keep the current height so the feed doesn't collapse to 0;
+        // the new content adjusts it once measured.
+        if resetHeight {
+            updateHeight(0)
+        }
 
-        BtaEventTracker.shared.track(BtaEvent(type: .pageView, btaFeedId: btaFeedId))
+        BtaEventTracker.shared.track(BtaEvent(type: .pageView, btaFeedId: params.btaFeedId))
 
         startViewabilityTimer()
-        rebuildBridge(btaFeedId: btaFeedId)
+        rebuildBridge(btaFeedId: params.btaFeedId)
 
-        let html = buildHTML(feedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations, isDarkMode: isDarkMode)
+        let html = buildHTML(
+            feedId: params.btaFeedId,
+            pageUrl: params.pageUrl,
+            debug: params.debug,
+            mockRecommendations: params.mockRecommendations,
+            isDarkMode: params.isDarkMode
+        )
         webView.loadHTMLString(html, baseURL: URL(string: Self.cdnBaseURL))
     }
 
@@ -440,19 +471,7 @@ extension BtaFeedView: WKNavigationDelegate {
         // iOS killed the WebContent process (memory pressure). Reload the feed transparently.
         guard let params = lastLoadParams else { return }
         suppressNextLoad = false
-        feedLoadedFired = false
-        viewableImpressionFired = false
-        updateHeight(0)
-        startViewabilityTimer()
-        rebuildBridge(btaFeedId: params.btaFeedId)
-        let html = buildHTML(
-            feedId: params.btaFeedId,
-            pageUrl: params.pageUrl,
-            debug: params.debug,
-            mockRecommendations: params.mockRecommendations,
-            isDarkMode: params.isDarkMode
-        )
-        webView.loadHTMLString(html, baseURL: URL(string: Self.cdnBaseURL))
+        performLoad(params, resetHeight: true)
     }
 }
 

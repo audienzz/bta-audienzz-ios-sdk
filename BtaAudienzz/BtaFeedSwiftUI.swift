@@ -32,6 +32,7 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
     var debug: Bool = false
     var mockRecommendations: Bool = false
     var isDarkMode: Bool? = nil
+    var reloadToken: AnyHashable? = nil
     var onArticleClick: ((ArticleClickPayload) -> Bool)?
     var onAdClick: ((AdClickPayload) -> Bool)?
     var onFeedLoaded: (() -> Void)?
@@ -61,6 +62,8 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
             || context.coordinator.lastLoadedPageUrl != pageUrl {
             context.coordinator.lastLoadedFeedId = btaFeedId
             context.coordinator.lastLoadedPageUrl = pageUrl
+            context.coordinator.lastReloadToken = reloadToken
+            context.coordinator.didCaptureInitialToken = true
             uiView.load(
                 btaFeedId: btaFeedId,
                 pageUrl: pageUrl,
@@ -68,6 +71,17 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
                 mockRecommendations: mockRecommendations,
                 isDarkMode: isDarkMode
             )
+            return
+        }
+
+        // Refresh the content in place when reloadToken changes (after the initial load),
+        // keeping the current height so there is no blank flash or jump.
+        if !context.coordinator.didCaptureInitialToken {
+            context.coordinator.didCaptureInitialToken = true
+            context.coordinator.lastReloadToken = reloadToken
+        } else if context.coordinator.lastReloadToken != reloadToken {
+            context.coordinator.lastReloadToken = reloadToken
+            uiView.reload()
         }
     }
 
@@ -86,6 +100,8 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
         var parent: BtaFeedSwiftUI
         var lastLoadedFeedId: String?
         var lastLoadedPageUrl: String?
+        var lastReloadToken: AnyHashable?
+        var didCaptureInitialToken = false
 
         init(_ parent: BtaFeedSwiftUI) {
             self.parent = parent
@@ -128,6 +144,13 @@ public extension BtaFeedSwiftUI {
 
     func isDarkMode(_ value: Bool?) -> Self {
         var copy = self; copy.isDarkMode = value; return copy
+    }
+
+    /// Change this to any new value to refresh the feed content in place (fresh
+    /// recommendations) without collapsing the feed height — no blank flash or jump.
+    /// Leave unchanged to avoid reloading.
+    func reloadToken(_ value: AnyHashable?) -> Self {
+        var copy = self; copy.reloadToken = value; return copy
     }
 
     func onArticleClick(_ action: @escaping (ArticleClickPayload) -> Bool) -> Self {
