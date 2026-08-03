@@ -58,6 +58,15 @@ public final class BtaFeedView: UIView {
     }
     private var lastLoadParams: LoadParams?
 
+    /// While > 0, a ``reload()`` is in progress and the view height must not shrink below
+    /// this value — it holds the pre-reload height so the feed doesn't collapse to ~0 while
+    /// the new (blank-then-growing) content loads. Released once the new content grows back
+    /// to this height, or by a timeout for a genuinely shorter feed.
+    private var reloadHeightFloor: CGFloat = 0
+
+    /// Max time the reload height floor is held before settling to the new height.
+    private static let reloadFloorTimeout: TimeInterval = 1.5
+
     private var viewabilityTimer: Timer?
     private var bridge: BtaJsBridge?
 
@@ -125,7 +134,8 @@ public final class BtaFeedView: UIView {
 
     /// Reload the feed content in place — fetches fresh recommendations without first
     /// collapsing the view height to 0, so there is no blank flash or layout jump. The
-    /// height adjusts smoothly once the new content reports its size.
+    /// pre-reload height is held while the new content loads and only settles to the new
+    /// size once it has rendered, so the feed does not visibly jump.
     ///
     /// Use this when your app refreshes page content (e.g. on back navigation) and you
     /// want new recommendations without the initial-load height reset. Replays the most
@@ -135,7 +145,29 @@ public final class BtaFeedView: UIView {
         guard let params = lastLoadParams else { return }
         // Skip the suppress-on-return flag — this is an explicit content refresh.
         suppressNextLoad = false
+        // Hold the current height so the feed doesn't collapse while the new content
+        // loads (the fresh page reports a near-zero height before the feed renders).
+        reloadHeightFloor = heightConstraint.constant
         performLoad(params, resetHeight: false)
+        // Safety net: release the floor after a max wait so a genuinely shorter feed
+        // settles to its true (smaller) height even if it never reaches the old one.
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.reloadFloorTimeout) { [weak self] in
+            self?.releaseReloadFloor()
+        }
+    }
+
+    /// Drop the reload height floor and settle to the new content's true height.
+    private func releaseReloadFloor() {
+        guard reloadHeightFloor > 0 else { return }
+        reloadHeightFloor = 0
+        webView.evaluateJavaScript("document.documentElement.scrollHeight") { [weak self] result, _ in
+            guard let self else { return }
+            let height: CGFloat
+            if let d = result as? Double { height = CGFloat(d) }
+            else if let n = result as? NSNumber { height = CGFloat(n.doubleValue) }
+            else { return }
+            if height > 0 { self.updateHeight(height) }
+        }
     }
 
     private func performLoad(_ params: LoadParams, resetHeight: Bool) {
@@ -143,9 +175,10 @@ public final class BtaFeedView: UIView {
         lastLoadParams = params
         viewableImpressionFired = false
         feedLoadedFired = false
-        // On a reload we keep the current height so the feed doesn't collapse to 0;
-        // the new content adjusts it once measured.
+        // On a full load we reset to 0 and clear any reload floor; on a reload the floor
+        // (set by reload()) keeps the current height so the feed doesn't collapse.
         if resetHeight {
+            reloadHeightFloor = 0
             updateHeight(0)
         }
 
@@ -220,7 +253,14 @@ public final class BtaFeedView: UIView {
 
         newBridge.onHeightChanged = { [weak self] height in
             guard let self else { return }
-            self.updateHeight(height)
+            if self.reloadHeightFloor > 0 {
+                // Mid-reload: never shrink below the pre-reload height. Once the new
+                // content grows back to it, following the true height is safe again.
+                self.updateHeight(max(height, self.reloadHeightFloor))
+                if height >= self.reloadHeightFloor { self.reloadHeightFloor = 0 }
+            } else {
+                self.updateHeight(height)
+            }
             // Fire didLoad the first time real content appears (height > 0).
             if height > 0 && !self.feedLoadedFired {
                 self.feedLoadedFired = true

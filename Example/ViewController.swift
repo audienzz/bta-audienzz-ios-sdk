@@ -14,6 +14,7 @@ final class ViewController: UIViewController {
     private let contentStack = UIStackView()
     private let articleLabel = UILabel()
     private let btaFeedView = BtaFeedView()
+    private let reloadButton = UIButton(type: .system)
 
     // MARK: - Lifecycle
 
@@ -66,6 +67,35 @@ final class ViewController: UIViewController {
             contentStack.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
             contentStack.widthAnchor.constraint(equalTo: scrollView.widthAnchor, constant: -32),
         ])
+
+        setupReloadButton()
+    }
+
+    /// Floating button to test `reload()` (fresh recommendations, no height jump).
+    private func setupReloadButton() {
+        reloadButton.translatesAutoresizingMaskIntoConstraints = false
+        reloadButton.setImage(UIImage(systemName: "arrow.clockwise"), for: .normal)
+        reloadButton.tintColor = .white
+        reloadButton.backgroundColor = .systemBlue
+        reloadButton.layer.cornerRadius = 28
+        reloadButton.layer.shadowColor = UIColor.black.cgColor
+        reloadButton.layer.shadowOpacity = 0.3
+        reloadButton.layer.shadowRadius = 4
+        reloadButton.layer.shadowOffset = CGSize(width: 0, height: 2)
+        reloadButton.addTarget(self, action: #selector(reloadTapped), for: .touchUpInside)
+
+        view.addSubview(reloadButton)
+        NSLayoutConstraint.activate([
+            reloadButton.widthAnchor.constraint(equalToConstant: 56),
+            reloadButton.heightAnchor.constraint(equalToConstant: 56),
+            reloadButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            reloadButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+        ])
+    }
+
+    @objc private func reloadTapped() {
+        print("[Example] reload() called from floating button")
+        btaFeedView.reload()
     }
 }
 
