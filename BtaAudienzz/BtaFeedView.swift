@@ -67,6 +67,10 @@ public final class BtaFeedView: UIView {
     /// Max time the reload height floor is held before settling to the new height.
     private static let reloadFloorTimeout: TimeInterval = 1.5
 
+    /// Single-flight latch for blank-feed recovery, so the process-termination handler and
+    /// the blank-on-return branch can't both reload at once. Cleared once content returns.
+    private var isRecovering = false
+
     private var viewabilityTimer: Timer?
     private var bridge: BtaJsBridge?
 
@@ -113,19 +117,15 @@ public final class BtaFeedView: UIView {
         if suppressNextLoad && btaFeedId == currentFeedId {
             suppressNextLoad = false
             rebuildBridge(btaFeedId: btaFeedId)
-            // Re-query current height from JS — the layout may have changed while the
-            // bridge was disconnected (e.g. images finished loading behind the modal).
-            webView.evaluateJavaScript("document.documentElement.scrollHeight") { [weak self] result, _ in
-                guard let self else { return }
-                let height: CGFloat
-                if let d = result as? Double { height = CGFloat(d) }
-                else if let n = result as? NSNumber { height = CGFloat(n.doubleValue) }
-                else { return }
-                if height > 0 { self.updateHeight(height) }
-            }
+            // The WKWebView content is preserved, but after returning from the fullscreen
+            // article its reported height can be stale/clipped (→ feed cut off), or iOS may
+            // have discarded the content process while the article was on top (→ blank feed).
+            // Re-measure a few times to let the layout settle; reload if it came back blank.
+            remeasureAfterReturn(attempt: 0)
             return
         }
         suppressNextLoad = false
+        isRecovering = false // a fresh, user-initiated load supersedes any recovery
         performLoad(
             LoadParams(btaFeedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations, isDarkMode: isDarkMode),
             resetHeight: true
@@ -167,6 +167,49 @@ public final class BtaFeedView: UIView {
             else if let n = result as? NSNumber { height = CGFloat(n.doubleValue) }
             else { return }
             if height > 0 { self.updateHeight(height) }
+        }
+    }
+
+    /// Robust height query used on the return path (largest of document/body extents),
+    /// matching the JS `reportHeight()` so a mid-reflow read can't clip the feed.
+    private static let robustHeightJS =
+        "Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0, document.body ? document.body.offsetHeight : 0)"
+
+    /// Delays (seconds) at which the feed is re-measured after returning from an article,
+    /// so a stale or still-settling layout is corrected rather than left clipped.
+    private static let returnRemeasureDelays: [TimeInterval] = [0, 0.15, 0.4, 0.8]
+
+    /// Re-measure the feed after returning from the fullscreen article. Corrects a stale or
+    /// clipped height across several settling passes; if the content came back blank (the
+    /// WKWebView process was discarded while the article was open), reloads it in place.
+    private func remeasureAfterReturn(attempt: Int) {
+        webView.evaluateJavaScript(Self.robustHeightJS) { [weak self] result, _ in
+            guard let self else { return }
+            var height: CGFloat = 0
+            if let d = result as? Double { height = CGFloat(d) }
+            else if let n = result as? NSNumber { height = CGFloat(n.doubleValue) }
+
+            if height <= 0 {
+                // Content is gone — reload fresh, holding the current height so it doesn't
+                // collapse. Only trigger this once (first pass), and not if a recovery is
+                // already in flight (e.g. the process-termination handler beat us to it).
+                guard attempt == 0, !self.isRecovering, let params = self.lastLoadParams else { return }
+                self.isRecovering = true
+                self.reloadHeightFloor = self.heightConstraint.constant
+                self.performLoad(params, resetHeight: false)
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.reloadFloorTimeout) { [weak self] in
+                    self?.releaseReloadFloor()
+                }
+                return
+            }
+
+            self.updateHeight(height)
+            let next = attempt + 1
+            if next < Self.returnRemeasureDelays.count {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.returnRemeasureDelays[next]) { [weak self] in
+                    self?.remeasureAfterReturn(attempt: next)
+                }
+            }
         }
     }
 
@@ -261,6 +304,8 @@ public final class BtaFeedView: UIView {
             } else {
                 self.updateHeight(height)
             }
+            // Content is back — any in-flight blank-feed recovery is done.
+            if height > 0 { self.isRecovering = false }
             // Fire didLoad the first time real content appears (height > 0).
             if height > 0 && !self.feedLoadedFired {
                 self.feedLoadedFired = true
@@ -302,8 +347,9 @@ public final class BtaFeedView: UIView {
         guard heightConstraint.constant != height else { return }
         heightConstraint.constant = height
         invalidateIntrinsicContentSize()
-        // Animate height changes to avoid a jarring snap.
-        UIView.animate(withDuration: 0.15) { self.superview?.layoutIfNeeded() }
+        // Apply immediately (no animation). The feed re-measures many times as items and
+        // images render, so animating each change makes it visibly grow/bounce up from the
+        // bottom on first load; snapping to content height reads as normal top-down filling.
         delegate?.btaFeedView(self, didUpdateHeight: height)
     }
 
@@ -509,7 +555,8 @@ extension BtaFeedView: WKNavigationDelegate {
 
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         // iOS killed the WebContent process (memory pressure). Reload the feed transparently.
-        guard let params = lastLoadParams else { return }
+        guard let params = lastLoadParams, !isRecovering else { return }
+        isRecovering = true
         suppressNextLoad = false
         performLoad(params, resetHeight: true)
     }
