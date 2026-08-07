@@ -24,7 +24,7 @@ Or add it to `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/audienzz/bta-audienzz-ios", from: "1.0.0"),
+    .package(url: "https://github.com/audienzz/bta-audienzz-ios-sdk", from: "0.1.10"),
 ],
 targets: [
     .target(name: "YourTarget", dependencies: ["BtaAudienzz"]),
@@ -237,12 +237,35 @@ BtaFeedSwiftUI(btaFeedId: "…", pageUrl: "…")
 
 ---
 
+## Loading state
+
+During the initial `load()`, the feed reserves a small height and shows a centered loading
+spinner instead of appearing at zero height. Once content arrives it resizes to fit; if the
+feed errors or returns nothing (or a timeout elapses), it collapses so there is no empty space.
+
+To show **your own** placeholder instead, disable the built-in one with
+`isLoadingHolderEnabled: false` and use the `btaFeedViewDidLoad` / `didFailWithError` delegate
+callbacks to hide yours:
+
+```swift
+btaFeedView.load(
+    btaFeedId: "your-bta-feed-id",
+    pageUrl: "https://your-site.com/the-article",
+    isLoadingHolderEnabled: false // SDK stays at 0 height until content arrives
+)
+// show your own placeholder now; hide it in btaFeedViewDidLoad(_:) / didFailWithError
+```
+
+In SwiftUI, add the `.isLoadingHolderEnabled(false)` modifier.
+
+---
+
 ## BtaFeedView API reference
 
 | Method / Property | Description |
 |-------------------|-------------|
 | `delegate: BtaFeedDelegate?` | Set or replace the event delegate |
-| `load(btaFeedId:pageUrl:debug:mockRecommendations:isDarkMode:)` | Load the feed. Call from `viewWillAppear` |
+| `load(btaFeedId:pageUrl:debug:mockRecommendations:isDarkMode:isLoadingHolderEnabled:)` | Load the feed. Call from `viewWillAppear` |
 | `reload()` | Refresh content in place without collapsing the height. Replays the last `load()` params |
 | `destroy()` | Release resources. Call from `viewWillDisappear` |
 
@@ -256,6 +279,7 @@ BtaFeedSwiftUI(btaFeedId: "…", pageUrl: "…")
 | `.mockRecommendations(Bool)` | `Bool` | Show mock content. **Do not use in production** |
 | `.isDarkMode(Bool?)` | `Bool?` | `true` forces dark, `false` forces light, `nil` auto-detects from the system |
 | `.reloadToken(AnyHashable?)` | `AnyHashable?` | Change to a new value to refresh content in place without collapsing the height |
+| `.isLoadingHolderEnabled(Bool)` | `Bool` | Show the SDK's loading spinner (reserved height) on initial load; `false` to use your own placeholder |
 | `.onArticleClick { ArticleClickPayload -> Bool }` | closure | Return `false` for SDK default, `true` to handle yourself |
 | `.onAdClick { AdClickPayload -> Bool }` | closure | Return `false` for SDK default, `true` to handle yourself |
 | `.onFeedLoaded { }` | closure | Called when the feed widget initialises |

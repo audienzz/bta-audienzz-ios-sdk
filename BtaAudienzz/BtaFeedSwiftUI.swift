@@ -33,6 +33,7 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
     var mockRecommendations: Bool = false
     var isDarkMode: Bool? = nil
     var reloadToken: AnyHashable? = nil
+    var isLoadingHolderEnabled: Bool = true
     var onArticleClick: ((ArticleClickPayload) -> Bool)?
     var onAdClick: ((AdClickPayload) -> Bool)?
     var onFeedLoaded: (() -> Void)?
@@ -69,7 +70,8 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
                 pageUrl: pageUrl,
                 debug: debug,
                 mockRecommendations: mockRecommendations,
-                isDarkMode: isDarkMode
+                isDarkMode: isDarkMode,
+                isLoadingHolderEnabled: isLoadingHolderEnabled
             )
             return
         }
@@ -151,6 +153,12 @@ public extension BtaFeedSwiftUI {
     /// Leave unchanged to avoid reloading.
     func reloadToken(_ value: AnyHashable?) -> Self {
         var copy = self; copy.reloadToken = value; return copy
+    }
+
+    /// When `true` (default), the SDK shows a loading spinner with reserved height during
+    /// the initial load. Set `false` to show your own placeholder instead.
+    func isLoadingHolderEnabled(_ enabled: Bool) -> Self {
+        var copy = self; copy.isLoadingHolderEnabled = enabled; return copy
     }
 
     func onArticleClick(_ action: @escaping (ArticleClickPayload) -> Bool) -> Self {

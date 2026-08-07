@@ -55,6 +55,7 @@ public final class BtaFeedView: UIView {
         let debug: Bool
         let mockRecommendations: Bool
         let isDarkMode: Bool?
+        let isLoadingHolderEnabled: Bool
     }
     private var lastLoadParams: LoadParams?
 
@@ -70,6 +71,21 @@ public final class BtaFeedView: UIView {
     /// Single-flight latch for blank-feed recovery, so the process-termination handler and
     /// the blank-on-return branch can't both reload at once. Cleared once content returns.
     private var isRecovering = false
+
+    /// Centered spinner shown over the reserved height during the initial load.
+    private let loadingIndicator = UIActivityIndicatorView(style: .medium)
+
+    /// True while the initial-load spinner is shown (height reserved, not 0).
+    private var isLoading = false
+
+    /// Bumped per load so a stale loading timeout can't collapse a newer load.
+    private var loadGeneration = 0
+
+    /// Reserved height shown with a spinner during the initial load.
+    private static let loadingHeight: CGFloat = 120
+
+    /// Max time the loading spinner shows before collapsing if no content arrives.
+    private static let loadingTimeout: TimeInterval = 10
 
     private var viewabilityTimer: Timer?
     private var bridge: BtaJsBridge?
@@ -104,12 +120,16 @@ public final class BtaFeedView: UIView {
     ///   - mockRecommendations: Show mock recommendations (**do not use in production**).
     ///   - isDarkMode: Override the color scheme: `true` forces dark theme, `false` forces
     ///     light theme, `nil` (default) auto-detects from the system via `prefers-color-scheme`.
+    ///   - isLoadingHolderEnabled: When `true` (default), the SDK reserves height and shows a
+    ///     loading spinner during the initial load. Set `false` to suppress it and show your
+    ///     own loading placeholder instead (the feed stays at 0 height until content arrives).
     public func load(
         btaFeedId: String,
         pageUrl: String,
         debug: Bool = false,
         mockRecommendations: Bool = false,
-        isDarkMode: Bool? = nil
+        isDarkMode: Bool? = nil,
+        isLoadingHolderEnabled: Bool = true
     ) {
         // Suppress reload when returning from the ad/article WebView for the same feed.
         // Still re-attach bridge handlers — destroy() may have removed them when the
@@ -127,7 +147,7 @@ public final class BtaFeedView: UIView {
         suppressNextLoad = false
         isRecovering = false // a fresh, user-initiated load supersedes any recovery
         performLoad(
-            LoadParams(btaFeedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations, isDarkMode: isDarkMode),
+            LoadParams(btaFeedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations, isDarkMode: isDarkMode, isLoadingHolderEnabled: isLoadingHolderEnabled),
             resetHeight: true
         )
     }
@@ -218,11 +238,16 @@ public final class BtaFeedView: UIView {
         lastLoadParams = params
         viewableImpressionFired = false
         feedLoadedFired = false
-        // On a full load we reset to 0 and clear any reload floor; on a reload the floor
-        // (set by reload()) keeps the current height so the feed doesn't collapse.
+        // On a full load, show the loading state (reserved height + spinner) instead of
+        // collapsing to 0 — unless the publisher opted out to show their own placeholder;
+        // on a reload the floor (set by reload()) keeps the current height.
         if resetHeight {
             reloadHeightFloor = 0
-            updateHeight(0)
+            if params.isLoadingHolderEnabled {
+                setLoading(true)
+            } else {
+                updateHeight(0)
+            }
         }
 
         BtaEventTracker.shared.track(BtaEvent(type: .pageView, btaFeedId: params.btaFeedId))
@@ -285,6 +310,35 @@ public final class BtaFeedView: UIView {
             webView.trailingAnchor.constraint(equalTo: trailingAnchor),
             heightConstraint,
         ])
+
+        // Centered loading spinner, shown over the reserved height during the initial load.
+        loadingIndicator.hidesWhenStopped = true
+        loadingIndicator.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(loadingIndicator)
+        NSLayoutConstraint.activate([
+            loadingIndicator.centerXAnchor.constraint(equalTo: centerXAnchor),
+            loadingIndicator.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    /// Toggle the initial-load loading state. When enabled, reserves ``loadingHeight`` and
+    /// shows a centered spinner instead of collapsing to 0; a timeout collapses it if content
+    /// never arrives, so there is no permanent dead space.
+    private func setLoading(_ loading: Bool) {
+        isLoading = loading
+        if loading {
+            loadingIndicator.startAnimating()
+            updateHeight(Self.loadingHeight)
+            loadGeneration += 1
+            let generation = loadGeneration
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.loadingTimeout) { [weak self] in
+                guard let self, self.isLoading, generation == self.loadGeneration else { return }
+                self.setLoading(false)
+                self.updateHeight(0)
+            }
+        } else {
+            loadingIndicator.stopAnimating()
+        }
     }
 
     // MARK: - Bridge management
@@ -296,6 +350,12 @@ public final class BtaFeedView: UIView {
 
         newBridge.onHeightChanged = { [weak self] height in
             guard let self else { return }
+            // While the loading state is shown, ignore empty-height reports (the page reports
+            // ~0 until the feed renders); switch to real content on the first non-zero height.
+            if self.isLoading {
+                if height <= 0 { return }
+                self.setLoading(false)
+            }
             if self.reloadHeightFloor > 0 {
                 // Mid-reload: never shrink below the pre-reload height. Once the new
                 // content grows back to it, following the true height is safe again.
@@ -318,6 +378,11 @@ public final class BtaFeedView: UIView {
         newBridge.onFeedLoaded = { /* JS SDK initialised — btaFeedViewDidLoad fires on first non-zero height */ }
         newBridge.onFeedError = { [weak self] error in
             guard let self else { return }
+            // No content will render — clear the loading state and collapse.
+            if self.isLoading {
+                self.setLoading(false)
+                self.updateHeight(0)
+            }
             self.delegate?.btaFeedView(self, didFailWithError: error)
         }
         newBridge.onWillOpenWebView = { [weak self] in
