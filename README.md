@@ -24,7 +24,7 @@ Or add it to `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/audienzz/bta-audienzz-ios-sdk", from: "0.1.10"),
+    .package(url: "https://github.com/audienzz/bta-audienzz-ios-sdk", from: "0.1.11"),
 ],
 targets: [
     .target(name: "YourTarget", dependencies: ["BtaAudienzz"]),
@@ -257,6 +257,15 @@ btaFeedView.load(
 ```
 
 In SwiftUI, add the `.isLoadingHolderEnabled(false)` modifier.
+
+---
+
+## Orientation changes
+
+The feed height recalculates **automatically** when the view's width changes (e.g. device
+rotation) — you don't need to call `load()` or `reload()`. Avoid calling `reload()` on rotation:
+it re-fetches recommendations and briefly holds the previous height, which can look wrong on
+the new orientation.
 
 ---
 

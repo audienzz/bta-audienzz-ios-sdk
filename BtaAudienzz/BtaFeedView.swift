@@ -81,6 +81,12 @@ public final class BtaFeedView: UIView {
     /// Bumped per load so a stale loading timeout can't collapse a newer load.
     private var loadGeneration = 0
 
+    /// Last laid-out width, to detect orientation/size changes and re-measure the height.
+    private var lastLaidOutWidth: CGFloat = 0
+
+    /// Delays (seconds) at which the feed is re-measured after a width change settles.
+    private static let resizeRemeasureDelays: [TimeInterval] = [0, 0.1, 0.3]
+
     /// Reserved height shown with a spinner during the initial load.
     private static let loadingHeight: CGFloat = 120
 
@@ -180,7 +186,7 @@ public final class BtaFeedView: UIView {
     private func releaseReloadFloor() {
         guard reloadHeightFloor > 0 else { return }
         reloadHeightFloor = 0
-        webView.evaluateJavaScript("document.documentElement.scrollHeight") { [weak self] result, _ in
+        webView.evaluateJavaScript(Self.robustHeightJS) { [weak self] result, _ in
             guard let self else { return }
             let height: CGFloat
             if let d = result as? Double { height = CGFloat(d) }
@@ -190,10 +196,12 @@ public final class BtaFeedView: UIView {
         }
     }
 
-    /// Robust height query used on the return path (largest of document/body extents),
-    /// matching the JS `reportHeight()` so a mid-reflow read can't clip the feed.
+    /// Height query used everywhere the SDK measures the feed. Uses the BODY content height,
+    /// not `documentElement`, whose scrollHeight is clamped to the viewport/frame height and so
+    /// can never report shorter than the current frame — which leaves a huge gap after the feed
+    /// shrinks (e.g. rotating to a shorter landscape layout) and can also clip it.
     private static let robustHeightJS =
-        "Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0, document.body ? document.body.offsetHeight : 0)"
+        "document.body ? Math.max(document.body.scrollHeight, document.body.offsetHeight) : 0"
 
     /// Delays (seconds) at which the feed is re-measured after returning from an article,
     /// so a stale or still-settling layout is corrected rather than left clipped.
@@ -281,6 +289,44 @@ public final class BtaFeedView: UIView {
 
     public override var intrinsicContentSize: CGSize {
         CGSize(width: UIView.noIntrinsicMetric, height: heightConstraint.constant)
+    }
+
+    // MARK: - Layout
+
+    public override func layoutSubviews() {
+        super.layoutSubviews()
+        let width = bounds.width
+        guard width > 0 else { return }
+        if lastLaidOutWidth == 0 {
+            // First layout — the load flow measures the initial height; just record the width.
+            lastLaidOutWidth = width
+            return
+        }
+        guard width != lastLaidOutWidth else { return }
+        // Width changed (e.g. orientation change): the content reflows to the new width, so
+        // its height changes. Re-measure and apply it — no reload() needed by the publisher.
+        lastLaidOutWidth = width
+        remeasureAfterResize(attempt: 0)
+    }
+
+    /// Re-measure the feed after a width change settles and apply the true height (which may
+    /// grow or shrink). Unlike the return path, this never reloads and never holds a floor —
+    /// on rotation we want to follow the real new height in both directions.
+    private func remeasureAfterResize(attempt: Int) {
+        guard currentFeedId != nil, !isLoading else { return }
+        webView.evaluateJavaScript(Self.robustHeightJS) { [weak self] result, _ in
+            guard let self else { return }
+            var height: CGFloat = 0
+            if let d = result as? Double { height = CGFloat(d) }
+            else if let n = result as? NSNumber { height = CGFloat(n.doubleValue) }
+            if height > 0 { self.updateHeight(height) }
+            let next = attempt + 1
+            if next < Self.resizeRemeasureDelays.count {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.resizeRemeasureDelays[next]) { [weak self] in
+                    self?.remeasureAfterResize(attempt: next)
+                }
+            }
+        }
     }
 
     // MARK: - Setup
@@ -560,17 +606,12 @@ public final class BtaFeedView: UIView {
                         return;
                     }
 
-                    // Use the largest of documentElement/body scroll & offset heights so a
-                    // late-loading image or an un-collapsed bottom margin can't clip the feed.
+                    // Measure the BODY content height (not documentElement, whose scrollHeight is
+                    // clamped to the viewport/frame and so can't shrink — leaving a huge gap after
+                    // the feed gets shorter, e.g. rotating to landscape).
                     function reportHeight() {
-                        var doc = document.documentElement;
                         var body = document.body;
-                        var h = Math.max(
-                            doc ? doc.scrollHeight : 0,
-                            doc ? doc.offsetHeight : 0,
-                            body ? body.scrollHeight : 0,
-                            body ? body.offsetHeight : 0
-                        );
+                        var h = body ? Math.max(body.scrollHeight, body.offsetHeight) : 0;
                         window.webkit.messageHandlers.onContentHeightChanged.postMessage(h);
                     }
 
