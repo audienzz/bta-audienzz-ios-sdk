@@ -24,7 +24,7 @@ Or add it to `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/audienzz/bta-audienzz-ios-sdk", from: "0.1.11"),
+    .package(url: "https://github.com/audienzz/bta-audienzz-ios-sdk", from: "0.1.12"),
 ],
 targets: [
     .target(name: "YourTarget", dependencies: ["BtaAudienzz"]),
@@ -269,12 +269,36 @@ the new orientation.
 
 ---
 
+## Custom fonts
+
+The feed renders inside a Shadow DOM. The SDK injects the font stylesheets at the **document
+level**, where they register globally and apply inside the feed (this is what makes custom fonts
+work on Android, whose WebView ignores shadow-scoped `@font-face`). The **standard AdConsole fonts
+load by default**, so you don't need to change anything.
+
+To use different fonts, pass your own `fontStyleUrls`; to disable injection, pass an empty array:
+
+```swift
+btaFeedView.load(
+    btaFeedId: "your-bta-feed-id",
+    pageUrl: "https://your-site.com/the-article",
+    fontStyleUrls: [
+        "https://cdn.adnz.co/business-click-fonts/YourFont/stylesheet.css"
+    ]
+    // or fontStyleUrls: [] to disable
+)
+```
+
+In SwiftUI, add the `.fontStyleUrls([...])` modifier.
+
+---
+
 ## BtaFeedView API reference
 
 | Method / Property | Description |
 |-------------------|-------------|
 | `delegate: BtaFeedDelegate?` | Set or replace the event delegate |
-| `load(btaFeedId:pageUrl:debug:mockRecommendations:isDarkMode:isLoadingHolderEnabled:)` | Load the feed. Call from `viewWillAppear` |
+| `load(btaFeedId:pageUrl:debug:mockRecommendations:isDarkMode:isLoadingHolderEnabled:fontStyleUrls:)` | Load the feed. Call from `viewWillAppear` |
 | `reload()` | Refresh content in place without collapsing the height. Replays the last `load()` params |
 | `destroy()` | Release resources. Call from `viewWillDisappear` |
 
@@ -289,6 +313,7 @@ the new orientation.
 | `.isDarkMode(Bool?)` | `Bool?` | `true` forces dark, `false` forces light, `nil` auto-detects from the system |
 | `.reloadToken(AnyHashable?)` | `AnyHashable?` | Change to a new value to refresh content in place without collapsing the height |
 | `.isLoadingHolderEnabled(Bool)` | `Bool` | Show the SDK's loading spinner (reserved height) on initial load; `false` to use your own placeholder |
+| `.fontStyleUrls([String])` | `[String]` | Font stylesheet URLs injected at the document level so custom fonts render inside the feed (parity with Android). Defaults to the standard AdConsole fonts; pass `[]` to disable |
 | `.onArticleClick { ArticleClickPayload -> Bool }` | closure | Return `false` for SDK default, `true` to handle yourself |
 | `.onAdClick { AdClickPayload -> Bool }` | closure | Return `false` for SDK default, `true` to handle yourself |
 | `.onFeedLoaded { }` | closure | Called when the feed widget initialises |

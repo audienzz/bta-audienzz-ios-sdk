@@ -34,6 +34,7 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
     var isDarkMode: Bool? = nil
     var reloadToken: AnyHashable? = nil
     var isLoadingHolderEnabled: Bool = true
+    var fontStyleUrls: [String] = BtaFeedView.defaultFontStyleUrls
     var onArticleClick: ((ArticleClickPayload) -> Bool)?
     var onAdClick: ((AdClickPayload) -> Bool)?
     var onFeedLoaded: (() -> Void)?
@@ -71,7 +72,8 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
                 debug: debug,
                 mockRecommendations: mockRecommendations,
                 isDarkMode: isDarkMode,
-                isLoadingHolderEnabled: isLoadingHolderEnabled
+                isLoadingHolderEnabled: isLoadingHolderEnabled,
+                fontStyleUrls: fontStyleUrls
             )
             return
         }
@@ -159,6 +161,12 @@ public extension BtaFeedSwiftUI {
     /// the initial load. Set `false` to show your own placeholder instead.
     func isLoadingHolderEnabled(_ enabled: Bool) -> Self {
         var copy = self; copy.isLoadingHolderEnabled = enabled; return copy
+    }
+
+    /// Font stylesheet URLs (with `@font-face` rules) injected at the document level so the
+    /// fonts are usable inside the feed's Shadow DOM (needed for custom fonts on Android).
+    func fontStyleUrls(_ urls: [String]) -> Self {
+        var copy = self; copy.fontStyleUrls = urls; return copy
     }
 
     func onArticleClick(_ action: @escaping (ArticleClickPayload) -> Bool) -> Self {

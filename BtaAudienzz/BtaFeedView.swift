@@ -56,6 +56,7 @@ public final class BtaFeedView: UIView {
         let mockRecommendations: Bool
         let isDarkMode: Bool?
         let isLoadingHolderEnabled: Bool
+        let fontStyleUrls: [String]
     }
     private var lastLoadParams: LoadParams?
 
@@ -129,13 +130,18 @@ public final class BtaFeedView: UIView {
     ///   - isLoadingHolderEnabled: When `true` (default), the SDK reserves height and shows a
     ///     loading spinner during the initial load. Set `false` to suppress it and show your
     ///     own loading placeholder instead (the feed stays at 0 height until content arrives).
+    ///   - fontStyleUrls: Font stylesheet URLs (containing `@font-face` rules) injected at the
+    ///     document level so the fonts are usable inside the feed's Shadow DOM. Defaults to the
+    ///     standard AdConsole fonts (``defaultFontStyleUrls``); pass your own URLs to override, or
+    ///     an empty array to disable.
     public func load(
         btaFeedId: String,
         pageUrl: String,
         debug: Bool = false,
         mockRecommendations: Bool = false,
         isDarkMode: Bool? = nil,
-        isLoadingHolderEnabled: Bool = true
+        isLoadingHolderEnabled: Bool = true,
+        fontStyleUrls: [String] = BtaFeedView.defaultFontStyleUrls
     ) {
         // Suppress reload when returning from the ad/article WebView for the same feed.
         // Still re-attach bridge handlers — destroy() may have removed them when the
@@ -153,7 +159,7 @@ public final class BtaFeedView: UIView {
         suppressNextLoad = false
         isRecovering = false // a fresh, user-initiated load supersedes any recovery
         performLoad(
-            LoadParams(btaFeedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations, isDarkMode: isDarkMode, isLoadingHolderEnabled: isLoadingHolderEnabled),
+            LoadParams(btaFeedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations, isDarkMode: isDarkMode, isLoadingHolderEnabled: isLoadingHolderEnabled, fontStyleUrls: fontStyleUrls),
             resetHeight: true
         )
     }
@@ -268,7 +274,8 @@ public final class BtaFeedView: UIView {
             pageUrl: params.pageUrl,
             debug: params.debug,
             mockRecommendations: params.mockRecommendations,
-            isDarkMode: params.isDarkMode
+            isDarkMode: params.isDarkMode,
+            fontStyleUrls: params.fontStyleUrls
         )
         webView.loadHTMLString(html, baseURL: URL(string: Self.cdnBaseURL))
     }
@@ -504,7 +511,7 @@ public final class BtaFeedView: UIView {
 
     // MARK: - HTML template
 
-    private func buildHTML(feedId: String, pageUrl: String, debug: Bool, mockRecommendations: Bool, isDarkMode: Bool?) -> String {
+    private func buildHTML(feedId: String, pageUrl: String, debug: Bool, mockRecommendations: Bool, isDarkMode: Bool?, fontStyleUrls: [String]) -> String {
         let debugLine = debug ? "debug: true," : ""
         let mockLine  = mockRecommendations ? "mockRecommendations: true," : ""
         let darkLine: String
@@ -513,6 +520,14 @@ public final class BtaFeedView: UIView {
         case .some(false): darkLine = ""
         case .none:        darkLine = "isDarkThemeSupported: true,"
         }
+
+        // Inject the publisher's font stylesheets at the DOCUMENT level, so their @font-face
+        // rules are registered globally and are usable inside the feed's Shadow DOM. Android's
+        // (older) WebView ignores @font-face declared inside a shadow root, so a document-level
+        // <link> is what makes the custom fonts render there.
+        let fontLinks = fontStyleUrls
+            .map { "<link rel=\"stylesheet\" href=\"\(Self.htmlAttributeEscaped($0))\" />" }
+            .joined(separator: "\n            ")
 
         // NOTE: On iOS, WKWebView JS height is already in UIKit points (no scale factor needed).
         // NOTE: Uses plain function() syntax and var for broad WebView compatibility.
@@ -523,6 +538,7 @@ public final class BtaFeedView: UIView {
             <base target="_parent" />
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+            \(fontLinks)
             <style>
                 * { margin: 0; padding: 0; box-sizing: border-box; }
                 html, body { overflow: hidden; width: 100%; }
@@ -644,6 +660,23 @@ public final class BtaFeedView: UIView {
     // MARK: - Constants
 
     static let cdnBaseURL = "https://cdn.adnz.co/"
+
+    /// Font stylesheets injected at the document level by default so the standard AdConsole fonts
+    /// render inside the feed's Shadow DOM (parity with Android). Override via `load`'s
+    /// `fontStyleUrls`, or pass an empty array to disable.
+    public static let defaultFontStyleUrls = [
+        "\(cdnBaseURL)business-click-fonts/Knockout/stylesheet.css",
+        "\(cdnBaseURL)business-click-fonts/Tiempos/stylesheet.css",
+    ]
+
+    /// Escape a string for safe use inside a double-quoted HTML attribute.
+    private static func htmlAttributeEscaped(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
 }
 
 // MARK: - WKNavigationDelegate
