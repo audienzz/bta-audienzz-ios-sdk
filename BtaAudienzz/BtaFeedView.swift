@@ -73,6 +73,11 @@ public final class BtaFeedView: UIView {
     /// the blank-on-return branch can't both reload at once. Cleared once content returns.
     private var isRecovering = false
 
+    /// While true (the ~1s window right after returning from an article), height updates may
+    /// only GROW — never shrink. Prevents a transient under-reported height from clipping the
+    /// (complete) feed as the WKWebView repaints on-screen.
+    private var returnGrowGuardActive = false
+
     /// Centered spinner shown over the reserved height during the initial load.
     private let loadingIndicator = UIActivityIndicatorView(style: .medium)
 
@@ -149,15 +154,17 @@ public final class BtaFeedView: UIView {
         if suppressNextLoad && btaFeedId == currentFeedId {
             suppressNextLoad = false
             rebuildBridge(btaFeedId: btaFeedId)
-            // The WKWebView content is preserved, but after returning from the fullscreen
-            // article its reported height can be stale/clipped (→ feed cut off), or iOS may
-            // have discarded the content process while the article was on top (→ blank feed).
-            // Re-measure a few times to let the layout settle; reload if it came back blank.
+            // The WKWebView content is preserved and was already correctly sized before we left.
+            // While it repaints coming back on-screen it can transiently under-report its height,
+            // which would clip the (complete) feed and get worse over the settle passes — so guard
+            // the return window to GROW-ONLY: re-measure to catch any growth, but never shrink.
+            beginReturnGrowGuard()
             remeasureAfterReturn(attempt: 0)
             return
         }
         suppressNextLoad = false
         isRecovering = false // a fresh, user-initiated load supersedes any recovery
+        returnGrowGuardActive = false // ...and supersedes the return grow-guard
         performLoad(
             LoadParams(btaFeedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations, isDarkMode: isDarkMode, isLoadingHolderEnabled: isLoadingHolderEnabled, fontStyleUrls: fontStyleUrls),
             resetHeight: true
@@ -213,9 +220,15 @@ public final class BtaFeedView: UIView {
     /// so a stale or still-settling layout is corrected rather than left clipped.
     private static let returnRemeasureDelays: [TimeInterval] = [0, 0.15, 0.4, 0.8]
 
-    /// Re-measure the feed after returning from the fullscreen article. Corrects a stale or
-    /// clipped height across several settling passes; if the content came back blank (the
-    /// WKWebView process was discarded while the article was open), reloads it in place.
+    /// How long height updates stay grow-only after returning from an article (covers the
+    /// re-measure passes above plus a small buffer).
+    private static let returnGrowGuardDuration: TimeInterval = 1.2
+
+    /// Re-measure the feed after returning from the fullscreen article, across several settling
+    /// passes, so a stale or clipped height is corrected. Does NOT reload on an early zero reading
+    /// — the WKWebView often reports a transient 0 height while it repaints on returning on-screen,
+    /// and reloading then would cause an unnecessary "new load"/jump. Only if the feed is *still*
+    /// blank after every settle pass do we treat it as a discarded process and reload in place.
     private func remeasureAfterReturn(attempt: Int) {
         webView.evaluateJavaScript(Self.robustHeightJS) { [weak self] result, _ in
             guard let self else { return }
@@ -223,25 +236,25 @@ public final class BtaFeedView: UIView {
             if let d = result as? Double { height = CGFloat(d) }
             else if let n = result as? NSNumber { height = CGFloat(n.doubleValue) }
 
-            if height <= 0 {
-                // Content is gone — reload fresh, holding the current height so it doesn't
-                // collapse. Only trigger this once (first pass), and not if a recovery is
-                // already in flight (e.g. the process-termination handler beat us to it).
-                guard attempt == 0, !self.isRecovering, let params = self.lastLoadParams else { return }
+            if height > 0 {
+                self.updateHeight(height)
+            }
+
+            let next = attempt + 1
+            if next < Self.returnRemeasureDelays.count {
+                // Keep re-measuring — a transient 0 now may become the real height shortly.
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.returnRemeasureDelays[next]) { [weak self] in
+                    self?.remeasureAfterReturn(attempt: next)
+                }
+            } else if height <= 0 {
+                // Still blank after the final settle pass → the content process was almost
+                // certainly discarded. Reload once, holding the height so it doesn't collapse.
+                guard !self.isRecovering, let params = self.lastLoadParams else { return }
                 self.isRecovering = true
                 self.reloadHeightFloor = self.heightConstraint.constant
                 self.performLoad(params, resetHeight: false)
                 DispatchQueue.main.asyncAfter(deadline: .now() + Self.reloadFloorTimeout) { [weak self] in
                     self?.releaseReloadFloor()
-                }
-                return
-            }
-
-            self.updateHeight(height)
-            let next = attempt + 1
-            if next < Self.returnRemeasureDelays.count {
-                DispatchQueue.main.asyncAfter(deadline: .now() + Self.returnRemeasureDelays[next]) { [weak self] in
-                    self?.remeasureAfterReturn(attempt: next)
                 }
             }
         }
@@ -438,7 +451,7 @@ public final class BtaFeedView: UIView {
             }
             self.delegate?.btaFeedView(self, didFailWithError: error)
         }
-        newBridge.onWillOpenWebView = { [weak self] in
+        newBridge.onWillNavigateAway = { [weak self] in
             self?.suppressNextLoad = true
         }
 
@@ -461,7 +474,19 @@ public final class BtaFeedView: UIView {
 
     // MARK: - Height
 
+    /// Enable grow-only height updates for a short window after returning from an article,
+    /// so a transient under-reported height can't clip the complete feed.
+    private func beginReturnGrowGuard() {
+        returnGrowGuardActive = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.returnGrowGuardDuration) { [weak self] in
+            self?.returnGrowGuardActive = false
+        }
+    }
+
     private func updateHeight(_ height: CGFloat) {
+        // Just after returning from an article the feed is already correctly sized; ignore any
+        // shrink (a transient under-report) so the complete feed can't be clipped. Growth is fine.
+        if returnGrowGuardActive && height < heightConstraint.constant { return }
         guard heightConstraint.constant != height else { return }
         heightConstraint.constant = height
         invalidateIntrinsicContentSize()

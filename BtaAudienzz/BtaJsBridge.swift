@@ -29,8 +29,9 @@ final class BtaJsBridge: NSObject {
     var onHeightChanged: ((CGFloat) -> Void)?
     var onFeedLoaded: (() -> Void)?
     var onFeedError: ((String) -> Void)?
-    /// Called on the main thread just before `BtaWebViewController` is presented (article or ad).
-    var onWillOpenWebView: (() -> Void)?
+    /// Called on the main thread on any article/ad click — the user is navigating away
+    /// (SDK web view or a publisher-handled click), so the feed should suppress its next reload.
+    var onWillNavigateAway: (() -> Void)?
 
     // MARK: Private
 
@@ -50,6 +51,10 @@ final class BtaJsBridge: NSObject {
         let payload = ArticleClickPayload(body: body)
         trackEvent(.articleClick, index: payload.index)
 
+        // The user is navigating away (whether we open the web view or the publisher handles
+        // it themselves), so suppress the reload that fires when the feed reappears.
+        onWillNavigateAway?()
+
         let handled = feedView.map { view in
             delegate?.btaFeedView(view, didClickArticle: payload) ?? false
         } ?? false
@@ -64,6 +69,8 @@ final class BtaJsBridge: NSObject {
         print("[BtaJsBridge] Ad click payload url: \(payload.url)")
         trackEvent(.adClick, index: payload.index)
 
+        onWillNavigateAway?()
+
         let handled = feedView.map { view in
             delegate?.btaFeedView(view, didClickAd: payload) ?? false
         } ?? false
@@ -75,7 +82,6 @@ final class BtaJsBridge: NSObject {
 
     private func openInWebViewController(urlString: String) {
         guard !urlString.isEmpty, let url = URL(string: urlString) else { return }
-        onWillOpenWebView?()
 
         guard let feedView, let presenter = feedView.closestViewController() else { return }
         let webVC = BtaWebViewController(url: url)
