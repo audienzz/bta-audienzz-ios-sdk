@@ -128,8 +128,10 @@ public final class BtaFeedView: UIView {
     ///   - btaFeedId: The feed identifier provided by Audienzz.
     ///   - pageUrl: The canonical URL of the article/page hosting the feed.
     ///              Used by the feed widget for contextual recommendations.
-    ///   - debug: Enable feed debug logging (**do not use in production**).
-    ///   - mockRecommendations: Show mock recommendations (**do not use in production**).
+    ///   - debug: Put the feed widget in debug mode — shows a debug/test banner instead of live
+    ///     ads (**testing only; must be `false` in production and to see real ads**).
+    ///   - mockRecommendations: Show mock (fake) recommendations instead of real ones
+    ///     (**testing only; must be `false` in production and to see real content**).
     ///   - isDarkMode: Override the color scheme: `true` forces dark theme, `false` forces
     ///     light theme, `nil` (default) auto-detects from the system via `prefers-color-scheme`.
     ///   - isLoadingHolderEnabled: When `true` (default), the SDK reserves height and shows a

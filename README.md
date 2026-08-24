@@ -308,8 +308,8 @@ In SwiftUI, add the `.fontStyleUrls([...])` modifier.
 
 | Modifier | Type | Description |
 |----------|------|-------------|
-| `.debug(Bool)` | `Bool` | Enable feed debug logging. **Do not use in production** |
-| `.mockRecommendations(Bool)` | `Bool` | Show mock content. **Do not use in production** |
+| `.debug(Bool)` | `Bool` | Puts the feed widget into **debug mode** — shows a debug/test banner instead of live ads. Testing only; **must be `false`** in production and to see real ads |
+| `.mockRecommendations(Bool)` | `Bool` | Shows **mock (fake) recommendations** instead of real ones. Testing only; **must be `false`** in production and to see real content |
 | `.isDarkMode(Bool?)` | `Bool?` | `true` forces dark, `false` forces light, `nil` auto-detects from the system |
 | `.reloadToken(AnyHashable?)` | `AnyHashable?` | Change to a new value to refresh content in place without collapsing the height |
 | `.isLoadingHolderEnabled(Bool)` | `Bool` | Show the SDK's loading spinner (reserved height) on initial load; `false` to use your own placeholder |
@@ -340,7 +340,7 @@ Events are batched with a 2-second debounce and sent in [CloudEvents 1.0](https:
 
 ## Debugging
 
-Pass `debug: true` and `mockRecommendations: true` to `load()` (or the corresponding SwiftUI modifiers) to show mock content without a live feed configuration:
+Pass `debug: true` and `mockRecommendations: true` to `load()` (or the corresponding SwiftUI modifiers) to exercise the feed without a live configuration:
 
 ```swift
 // UIKit
@@ -355,6 +355,17 @@ BtaFeedSwiftUI(btaFeedId: "your-bta-feed-id")
     .debug(true)
     .mockRecommendations(true)
 ```
+
+> ⚠️ **These flags are for testing only — they suppress real content and ads.**
+> - `debug: true` puts the widget in **debug mode**, which shows a **debug/test banner instead of live ads**.
+> - `mockRecommendations: true` shows **fake recommendations** instead of real ones.
+>
+> If you see only recommendations, no advertising, or just a debug banner, check these flags first.
+> For production — and to see **real recommendations and real ads** — call `load()` with **both `false`** (the defaults):
+> ```swift
+> btaFeedView.load(btaFeedId: "your-bta-feed-id", pageUrl: "https://your-site.com/the-article")
+> ```
+> Note: even with the flags off, ads only fill when there is live ad demand — real ads generally appear in production with real traffic, not in a test/preview build.
 
 To inspect the feed in Safari Web Inspector, enable WebView debugging in your scheme's `Run` action or at launch:
 
