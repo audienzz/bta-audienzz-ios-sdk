@@ -16,6 +16,11 @@ let package = Package(
             name: "BtaAudienzz",
             path: "BtaAudienzz",
             exclude: ["BtaAudienzz.docc"]
+        ),
+        .testTarget(
+            name: "BtaAudienzzTests",
+            dependencies: ["BtaAudienzz"],
+            path: "Tests/BtaAudienzzTests"
         )
     ]
 )

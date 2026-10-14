@@ -22,12 +22,18 @@ final class BtaEventTracker {
     // MARK: - Public
 
     func initialize() {
-        if visitorId == nil {
-            visitorId = BtaVisitorId.getOrCreate()
-        }
+        // The visitor ID is created lazily on the first allowed `track(_:)` so that no
+        // identifier is persisted before consent is known (see `BtaConsent.analyticsAllowed`).
     }
 
     func track(_ event: BtaEvent) {
+        // Honour the app's IAB TCF consent: drop analytics when GDPR applies without consent.
+        guard BtaConsent.analyticsAllowed else { return }
+
+        if visitorId == nil {
+            visitorId = BtaVisitorId.getOrCreate()
+        }
+
         var enriched = event
         enriched.visitorId = visitorId ?? ""
 
@@ -56,6 +62,8 @@ final class BtaEventTracker {
         lock.unlock()
 
         guard !events.isEmpty else { return }
+        // Re-check in case consent was withdrawn while events were queued.
+        guard BtaConsent.analyticsAllowed else { return }
         BtaEventSender.send(events)
     }
 }

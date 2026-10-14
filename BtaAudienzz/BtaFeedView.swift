@@ -565,6 +565,7 @@ public final class BtaFeedView: UIView {
             <base target="_parent" />
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+            \(Self.tcfConsentScript())
             \(fontLinks)
             <style>
                 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -703,6 +704,60 @@ public final class BtaFeedView: UIView {
             .replacingOccurrences(of: "\"", with: "&quot;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    /// Reads the app's IAB TCF consent (as written by a CMP such as Usercentrics into
+    /// `UserDefaults` — `IABTCF_TCString` / `IABTCF_gdprApplies`) and returns a `<script>`
+    /// that exposes it to the feed's WebView through the standard `__tcfapi`, so the ad layer
+    /// (Prebid) inside the feed picks up the user's consent. Returns "" when no consent string
+    /// is stored yet — the feed then behaves exactly as before.
+    private static func tcfConsentScript() -> String {
+        guard let tcString = BtaConsent.tcString else { return "" }
+        return tcfBridgeScript(tcString: tcString, gdprApplies: BtaConsent.gdprApplies)
+    }
+
+    /// Builds the `__tcfapi` CMP stub (same-frame function + cross-frame postMessage locator)
+    /// that serves the given TC string to anything in the feed document that reads TCF v2.
+    static func tcfBridgeScript(tcString: String, gdprApplies: Bool) -> String {
+        let tc = tcString
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let ga = gdprApplies ? "true" : "false"
+        return """
+        <script type="text/javascript">
+            (function() {
+                var tc = "\(tc)";
+                var ga = \(ga);
+                function data(id) { return { tcString: tc, gdprApplies: ga, eventStatus: 'tcloaded', cmpStatus: 'loaded', isServiceSpecific: true, useNonStandardStacks: false, purposeOneTreatment: false, publisherCC: '', listenerId: id }; }
+                function run(cmd, ver, cb, arg) {
+                    try {
+                        if (cmd === 'ping') { cb({ gdprApplies: ga, cmpLoaded: true, cmpStatus: 'loaded', displayStatus: 'hidden', apiVersion: '2.2', cmpId: 0, cmpVersion: 1, gvlVersion: 0, tcfPolicyVersion: 2 }); }
+                        else if (cmd === 'getTCData') { cb(data(undefined), true); }
+                        else if (cmd === 'addEventListener') { cb(data(0), true); }
+                        else if (cmd === 'removeEventListener') { cb(true, true); }
+                        else { cb(null, false); }
+                    } catch (e) {}
+                }
+                if (typeof window.__tcfapi !== 'function') { window.__tcfapi = run; }
+                window.addEventListener('message', function(e) {
+                    var d = e.data, p;
+                    try { p = (typeof d === 'string') ? JSON.parse(d) : d; } catch (err) { return; }
+                    var c = p && p.__tcfapiCall; if (!c) return;
+                    run(c.command, c.version, function(rv, ok) {
+                        var r = { __tcfapiReturn: { returnValue: rv, success: ok, callId: c.callId } };
+                        e.source.postMessage((typeof d === 'string') ? JSON.stringify(r) : r, '*');
+                    }, c.parameter);
+                }, false);
+                function addLocator() {
+                    if (window.frames['__tcfapiLocator']) { return; }
+                    var f = document.createElement('iframe');
+                    f.style.cssText = 'display:none'; f.name = '__tcfapiLocator';
+                    (document.body || document.documentElement).appendChild(f);
+                }
+                if (document.body) { addLocator(); } else { document.addEventListener('DOMContentLoaded', addLocator); }
+            })();
+        </script>
+        """
     }
 }
 
