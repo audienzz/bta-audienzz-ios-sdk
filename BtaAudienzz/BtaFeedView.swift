@@ -720,26 +720,68 @@ public final class BtaFeedView: UIView {
     /// (Prebid) inside the feed picks up the user's consent. Returns "" when no consent string
     /// is stored yet — the feed then behaves exactly as before.
     private static func tcfConsentScript() -> String {
-        guard let tcString = BtaConsent.tcString else { return "" }
-        return tcfBridgeScript(tcString: tcString, gdprApplies: BtaConsent.gdprApplies)
+        guard let data = BtaConsent.tcfData else { return "" }
+        return tcfBridgeScript(data)
     }
 
     /// Builds the `__tcfapi` CMP stub (same-frame function + cross-frame postMessage locator)
-    /// that serves the given TC string to anything in the feed document that reads TCF v2.
-    static func tcfBridgeScript(tcString: String, gdprApplies: Bool) -> String {
-        let tc = tcString
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        let ga = gdprApplies ? "true" : "false"
+    /// that serves a **full** TCData object — decoded purpose/vendor/special-feature/publisher
+    /// consents, not just the TC string — to anything in the feed document that reads TCF v2.
+    /// Prebid's TCF enforcement reads `purpose.consents` / `vendor.consents`, so these must be
+    /// present or every bidder is blocked.
+    static func tcfBridgeScript(_ d: BtaConsent.TcfData) -> String {
+        func esc(_ s: String) -> String {
+            s.replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+        }
+        let tc = esc(d.tcString)
+        let ga = d.gdprApplies ? "true" : "false"
+        let p1t = d.purposeOneTreatment ? "true" : "false"
+        let pcc = esc(d.publisherCC)
+        let pc = esc(d.purposeConsents)
+        let pli = esc(d.purposeLegitimateInterests)
+        let vc = esc(d.vendorConsents)
+        let vli = esc(d.vendorLegitimateInterests)
+        let sf = esc(d.specialFeatureOptins)
+        let pubC = esc(d.publisherConsent)
+        let pubLI = esc(d.publisherLegitimateInterests)
+        let cmpId = d.cmpId
+        let policyVer = d.tcfPolicyVersion
         return """
         <script type="text/javascript">
             (function() {
                 var tc = "\(tc)";
                 var ga = \(ga);
-                function data(id) { return { tcString: tc, gdprApplies: ga, eventStatus: 'tcloaded', cmpStatus: 'loaded', isServiceSpecific: true, useNonStandardStacks: false, purposeOneTreatment: false, publisherCC: '', listenerId: id }; }
+                function bits(s) { var o = {}; for (var i = 0; i < s.length; i++) { o[i + 1] = s.charAt(i) === '1'; } return o; }
+                var purposeConsents = bits("\(pc)");
+                var purposeLI = bits("\(pli)");
+                var vendorConsents = bits("\(vc)");
+                var vendorLI = bits("\(vli)");
+                var specialFeatureOptins = bits("\(sf)");
+                var publisherConsents = bits("\(pubC)");
+                var publisherLI = bits("\(pubLI)");
+                function data(id) {
+                    return {
+                        tcString: tc, gdprApplies: ga,
+                        eventStatus: 'tcloaded', cmpStatus: 'loaded',
+                        cmpId: \(cmpId), cmpVersion: 1, gvlVersion: 0, tcfPolicyVersion: \(policyVer),
+                        isServiceSpecific: true, useNonStandardStacks: false,
+                        purposeOneTreatment: \(p1t), publisherCC: "\(pcc)",
+                        purpose: { consents: purposeConsents, legitimateInterests: purposeLI },
+                        vendor: { consents: vendorConsents, legitimateInterests: vendorLI },
+                        specialFeatureOptins: specialFeatureOptins,
+                        publisher: {
+                            consents: publisherConsents,
+                            legitimateInterests: publisherLI,
+                            customPurpose: { consents: {}, legitimateInterests: {} },
+                            restrictions: {}
+                        },
+                        listenerId: id
+                    };
+                }
                 function run(cmd, ver, cb, arg) {
                     try {
-                        if (cmd === 'ping') { cb({ gdprApplies: ga, cmpLoaded: true, cmpStatus: 'loaded', displayStatus: 'hidden', apiVersion: '2.2', cmpId: 0, cmpVersion: 1, gvlVersion: 0, tcfPolicyVersion: 2 }); }
+                        if (cmd === 'ping') { cb({ gdprApplies: ga, cmpLoaded: true, cmpStatus: 'loaded', displayStatus: 'hidden', apiVersion: '2.2', cmpId: \(cmpId), cmpVersion: 1, gvlVersion: 0, tcfPolicyVersion: \(policyVer) }); }
                         else if (cmd === 'getTCData') { cb(data(undefined), true); }
                         else if (cmd === 'addEventListener') { cb(data(0), true); }
                         else if (cmd === 'removeEventListener') { cb(true, true); }

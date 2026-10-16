@@ -30,6 +30,50 @@ enum BtaConsent {
         return tcString != nil
     }
 
+    /// The decoded IAB TCF v2 consent the CMP wrote to `UserDefaults`, as needed to synthesise a
+    /// full `TCData` object for the `__tcfapi` bridge. The binary `*Consents`/`*LegitimateInterests`
+    /// fields are the standard "1"/"0"-per-index strings (purpose/vendor/special-feature id → bit).
+    struct TcfData {
+        let tcString: String
+        let gdprApplies: Bool
+        let purposeConsents: String
+        let purposeLegitimateInterests: String
+        let vendorConsents: String
+        let vendorLegitimateInterests: String
+        let specialFeatureOptins: String
+        let publisherConsent: String
+        let publisherLegitimateInterests: String
+        let publisherCC: String
+        let purposeOneTreatment: Bool
+        let cmpId: Int
+        let tcfPolicyVersion: Int
+    }
+
+    /// Reads the full decoded TCF consent from storage, or `nil` when no TC string is stored.
+    static var tcfData: TcfData? {
+        guard let tc = tcString else { return nil }
+        let d = UserDefaults.standard
+        func str(_ key: String) -> String { d.string(forKey: key) ?? "" }
+        func int(_ key: String, _ fallback: Int) -> Int {
+            d.object(forKey: key) != nil ? d.integer(forKey: key) : fallback
+        }
+        return TcfData(
+            tcString: tc,
+            gdprApplies: gdprApplies,
+            purposeConsents: str(Key.purposeConsents),
+            purposeLegitimateInterests: str("IABTCF_PurposeLegitimateInterests"),
+            vendorConsents: str("IABTCF_VendorConsents"),
+            vendorLegitimateInterests: str("IABTCF_VendorLegitimateInterests"),
+            specialFeatureOptins: str("IABTCF_SpecialFeaturesOptins"),
+            publisherConsent: str("IABTCF_PublisherConsent"),
+            publisherLegitimateInterests: str("IABTCF_PublisherLegitimateInterests"),
+            publisherCC: str("IABTCF_PublisherCC"),
+            purposeOneTreatment: int("IABTCF_PurposeOneTreatment", 0) == 1,
+            cmpId: int("IABTCF_CmpSdkID", 0),
+            tcfPolicyVersion: int("IABTCF_PolicyVersion", 2)
+        )
+    }
+
     /// Whether analytics collection/sending is permitted under the current consent.
     ///
     /// The SDK stores a visitor ID and sends measurement events, which fall under TCF Purpose 1
