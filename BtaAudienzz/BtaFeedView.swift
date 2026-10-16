@@ -54,6 +54,7 @@ public final class BtaFeedView: UIView {
         let pageUrl: String
         let debug: Bool
         let mockRecommendations: Bool
+        let mockAds: Bool
         let isDarkMode: Bool?
         let isLoadingHolderEnabled: Bool
         let fontStyleUrls: [String]
@@ -72,6 +73,16 @@ public final class BtaFeedView: UIView {
     /// Single-flight latch for blank-feed recovery, so the process-termination handler and
     /// the blank-on-return branch can't both reload at once. Cleared once content returns.
     private var isRecovering = false
+
+    /// Whether the currently-loaded page was given a resolved (valid, GDPR-complete) consent. Used
+    /// to tell "no CMP on first load" apart from "consent cleared on an existing page".
+    private var consentWasResolved = false
+
+    /// Whether the `__tcfapi` bridge was injected into the current page at load time. The feed's
+    /// Prebid configures consent management only at init and only if the bridge already exists, so
+    /// consent arriving on a page that loaded without the bridge needs a reload, not a runtime
+    /// injection.
+    private var bridgeInjectedAtLoad = false
 
     /// While true (the ~1s window right after returning from an article), height updates may
     /// only GROW — never shrink. Prevents a transient under-reported height from clipping the
@@ -128,10 +139,13 @@ public final class BtaFeedView: UIView {
     ///   - btaFeedId: The feed identifier provided by Audienzz.
     ///   - pageUrl: The canonical URL of the article/page hosting the feed.
     ///              Used by the feed widget for contextual recommendations.
-    ///   - debug: Put the feed widget in debug mode — shows a debug/test banner instead of live
-    ///     ads (**testing only; must be `false` in production and to see real ads**).
+    ///   - debug: Enable the feed widget's debug logging (**testing only; must be `false` in
+    ///     production**). This does **not** show a test ad — use `mockAds` for that.
     ///   - mockRecommendations: Show mock (fake) recommendations instead of real ones
     ///     (**testing only; must be `false` in production and to see real content**).
+    ///   - mockAds: Show mock/test ad creatives (the violet test banner) instead of running the
+    ///     real ad auction. Useful for verifying ad slots in test builds where real demand won't
+    ///     fill (**testing only; must be `false` in production and to see real ads**).
     ///   - isDarkMode: Override the color scheme: `true` forces dark theme, `false` forces
     ///     light theme, `nil` (default) auto-detects from the system via `prefers-color-scheme`.
     ///   - isLoadingHolderEnabled: When `true` (default), the SDK reserves height and shows a
@@ -146,16 +160,23 @@ public final class BtaFeedView: UIView {
         pageUrl: String,
         debug: Bool = false,
         mockRecommendations: Bool = false,
+        mockAds: Bool = false,
         isDarkMode: Bool? = nil,
         isLoadingHolderEnabled: Bool = true,
         fontStyleUrls: [String] = BtaFeedView.defaultFontStyleUrls
     ) {
+        // destroy() (called from viewWillDisappear) removes the consent observer, so restart it on
+        // every load() — otherwise consent changes stop reaching the WebView after the first return.
+        startConsentObserver()
+
         // Suppress reload when returning from the ad/article WebView for the same feed.
         // Still re-attach bridge handlers — destroy() may have removed them when the
         // fullscreen modal caused viewWillDisappear to fire on the parent view controller.
         if suppressNextLoad && btaFeedId == currentFeedId {
             suppressNextLoad = false
             rebuildBridge(btaFeedId: btaFeedId)
+            // Reconcile current consent into the preserved page (it may have changed while away).
+            pushConsentUpdate()
             // The WKWebView content is preserved and was already correctly sized before we left.
             // While it repaints coming back on-screen it can transiently under-report its height,
             // which would clip the (complete) feed and get worse over the settle passes — so guard
@@ -168,7 +189,7 @@ public final class BtaFeedView: UIView {
         isRecovering = false // a fresh, user-initiated load supersedes any recovery
         returnGrowGuardActive = false // ...and supersedes the return grow-guard
         performLoad(
-            LoadParams(btaFeedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations, isDarkMode: isDarkMode, isLoadingHolderEnabled: isLoadingHolderEnabled, fontStyleUrls: fontStyleUrls),
+            LoadParams(btaFeedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations, mockAds: mockAds, isDarkMode: isDarkMode, isLoadingHolderEnabled: isLoadingHolderEnabled, fontStyleUrls: fontStyleUrls),
             resetHeight: true
         )
     }
@@ -289,15 +310,21 @@ public final class BtaFeedView: UIView {
             pageUrl: params.pageUrl,
             debug: params.debug,
             mockRecommendations: params.mockRecommendations,
+            mockAds: params.mockAds,
             isDarkMode: params.isDarkMode,
             fontStyleUrls: params.fontStyleUrls
         )
+        // Record consent state at load: whether the bridge was injected (so Prebid configured
+        // consent management), and whether a resolved consent was present.
+        bridgeInjectedAtLoad = BtaConsent.hasCmpData
+        consentWasResolved = bridgeInjectedAtLoad && BtaConsent.updateSnapshot.ready
         webView.loadHTMLString(html, baseURL: URL(string: Self.cdnBaseURL))
     }
 
     /// Release resources. Call from `viewWillDisappear` or the owning object's `deinit`.
     public func destroy() {
         stopViewabilityTimer()
+        stopConsentObserver()
         // When navigating to an article, suppress in-progress resource loads being cancelled —
         // the WebView should keep its content intact so returning looks seamless.
         if !suppressNextLoad {
@@ -387,6 +414,43 @@ public final class BtaFeedView: UIView {
             loadingIndicator.centerXAnchor.constraint(equalTo: centerXAnchor),
             loadingIndicator.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+
+        startConsentObserver()
+    }
+
+    // MARK: - Consent observer
+
+    private var consentObserver: NSObjectProtocol?
+    private var consentPushWorkItem: DispatchWorkItem?
+
+    /// Watches `UserDefaults` for CMP consent changes and pushes them to the live bridge (debounced)
+    /// so withdrawn/updated consent reaches in-page auctions without a full reload.
+    private func startConsentObserver() {
+        guard consentObserver == nil else { return } // idempotent — safe to call on every load()
+        consentObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.consentPushWorkItem?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.pushConsentUpdate() }
+            self.consentPushWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+        }
+    }
+
+    private func stopConsentObserver() {
+        consentPushWorkItem?.cancel()
+        consentPushWorkItem = nil
+        if let observer = consentObserver {
+            NotificationCenter.default.removeObserver(observer)
+            consentObserver = nil
+        }
+    }
+
+    deinit {
+        stopConsentObserver()
     }
 
     /// Toggle the initial-load loading state. When enabled, reserves ``loadingHeight`` and
@@ -538,9 +602,10 @@ public final class BtaFeedView: UIView {
 
     // MARK: - HTML template
 
-    private func buildHTML(feedId: String, pageUrl: String, debug: Bool, mockRecommendations: Bool, isDarkMode: Bool?, fontStyleUrls: [String]) -> String {
+    private func buildHTML(feedId: String, pageUrl: String, debug: Bool, mockRecommendations: Bool, mockAds: Bool, isDarkMode: Bool?, fontStyleUrls: [String]) -> String {
         let debugLine = debug ? "debug: true," : ""
         let mockLine  = mockRecommendations ? "mockRecommendations: true," : ""
+        let mockAdsLine = mockAds ? "mockAds: true," : ""
         let darkLine: String
         switch isDarkMode {
         case .some(true):  darkLine = "forceDarkTheme: true,"
@@ -584,6 +649,7 @@ public final class BtaFeedView: UIView {
                             webview: true,
                             \(debugLine)
                             \(mockLine)
+                            \(mockAdsLine)
                             \(darkLine)
                             onArticleClick: function(payload) {
                                 payload.event.preventDefault();
@@ -712,32 +778,65 @@ public final class BtaFeedView: UIView {
     /// (Prebid) inside the feed picks up the user's consent. Returns "" when no consent string
     /// is stored yet — the feed then behaves exactly as before.
     private static func tcfConsentScript() -> String {
-        guard let tcString = BtaConsent.tcString else { return "" }
-        return tcfBridgeScript(tcString: tcString, gdprApplies: BtaConsent.gdprApplies)
+        // Install the bridge whenever a CMP is present. When the TC string has not been written yet
+        // but the CMP is active (gdprApplies set), inject a pending/cleared snapshot so the bridge
+        // exists and a later consent update can reach it (and in-page auctions wait for readiness).
+        guard BtaConsent.hasCmpData else { return "" }
+        return "<script type=\"text/javascript\">\(tcfBridgeJs(BtaConsent.updateSnapshot.json))</script>"
     }
 
-    /// Builds the `__tcfapi` CMP stub (same-frame function + cross-frame postMessage locator)
-    /// that serves the given TC string to anything in the feed document that reads TCF v2.
-    static func tcfBridgeScript(tcString: String, gdprApplies: Bool) -> String {
-        let tc = tcString
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        let ga = gdprApplies ? "true" : "false"
+    /// The `__tcfapi` CMP-stub JavaScript (without the `<script>` wrapper, so it can also be injected
+    /// at runtime via `evaluateJavaScript`). Serves a **full** TCData object (decoded purpose/vendor/
+    /// special-feature/publisher consents and restrictions, built in `BtaConsent.buildTcData`);
+    /// Prebid enforcement reads `purpose.consents` / `vendor.consents`, so these must be present or
+    /// every bidder is blocked.
+    ///
+    /// The payload is a single JSON blob with `<` escaped to `<` so a malformed stored value
+    /// cannot break out of an inline `<script>`. Supports real add/removeEventListener with unique
+    /// ids; each listener is dispatched in its own try/catch so one throwing callback cannot starve
+    /// the others. `window.__btaTcfApplyUpdate` replaces the live snapshot and re-notifies listeners,
+    /// preserving the snapshot's readiness (a not-ready update stays `cmpuishown`).
+    static func tcfBridgeJs(_ tcDataJson: String) -> String {
+        let safe = tcDataJson.replacingOccurrences(of: "<", with: "\\u003c")
         return """
-        <script type="text/javascript">
             (function() {
-                var tc = "\(tc)";
-                var ga = \(ga);
-                function data(id) { return { tcString: tc, gdprApplies: ga, eventStatus: 'tcloaded', cmpStatus: 'loaded', isServiceSpecific: true, useNonStandardStacks: false, purposeOneTreatment: false, publisherCC: '', listenerId: id }; }
+                var base = \(safe);
+                var listeners = {}, nextId = 0;
+                function snap(listenerId) {
+                    var d = JSON.parse(JSON.stringify(base));
+                    if (listenerId !== undefined) { d.listenerId = listenerId; }
+                    return d;
+                }
                 function run(cmd, ver, cb, arg) {
                     try {
-                        if (cmd === 'ping') { cb({ gdprApplies: ga, cmpLoaded: true, cmpStatus: 'loaded', displayStatus: 'hidden', apiVersion: '2.2', cmpId: 0, cmpVersion: 1, gvlVersion: 0, tcfPolicyVersion: 2 }); }
-                        else if (cmd === 'getTCData') { cb(data(undefined), true); }
-                        else if (cmd === 'addEventListener') { cb(data(0), true); }
-                        else if (cmd === 'removeEventListener') { cb(true, true); }
+                        if (cmd === 'ping') {
+                            cb({ gdprApplies: base.gdprApplies, cmpLoaded: true, cmpStatus: base.cmpStatus, displayStatus: 'hidden', apiVersion: '2.2', cmpId: base.cmpId, cmpVersion: base.cmpVersion, tcfPolicyVersion: base.tcfPolicyVersion });
+                            return;
+                        }
+                        if (ver !== undefined && ver !== null && ver !== 2) { cb(null, false); return; }
+                        if (cmd === 'getTCData') { cb(snap(undefined), true); }
+                        else if (cmd === 'addEventListener') { var id = nextId++; listeners[id] = cb; cb(snap(id), true); }
+                        else if (cmd === 'removeEventListener') {
+                            if (typeof arg === 'number' && listeners.hasOwnProperty(arg)) { delete listeners[arg]; cb(true, true); }
+                            else { cb(false, false); }
+                        }
                         else { cb(null, false); }
                     } catch (e) {}
                 }
+                window.__btaTcfApplyUpdate = function(json) {
+                    var next;
+                    try { next = JSON.parse(json); } catch (e) { return; }
+                    base = next;
+                    var status = (base.eventStatus === 'tcloaded') ? 'useractioncomplete' : base.eventStatus;
+                    for (var id in listeners) {
+                        if (!listeners.hasOwnProperty(id)) { continue; }
+                        try {
+                            var ev = snap(parseInt(id, 10));
+                            ev.eventStatus = status;
+                            listeners[id](ev, true);
+                        } catch (e) {}
+                    }
+                };
                 if (typeof window.__tcfapi !== 'function') { window.__tcfapi = run; }
                 window.addEventListener('message', function(e) {
                     var d = e.data, p;
@@ -748,16 +847,66 @@ public final class BtaFeedView: UIView {
                         e.source.postMessage((typeof d === 'string') ? JSON.stringify(r) : r, '*');
                     }, c.parameter);
                 }, false);
+                var locatorAdded = false;
                 function addLocator() {
-                    if (window.frames['__tcfapiLocator']) { return; }
+                    if (locatorAdded || window.frames['__tcfapiLocator']) { return; }
+                    var parent = document.body || document.documentElement;
+                    if (!parent) { return; }
                     var f = document.createElement('iframe');
                     f.style.cssText = 'display:none'; f.name = '__tcfapiLocator';
-                    (document.body || document.documentElement).appendChild(f);
+                    parent.appendChild(f); locatorAdded = true;
                 }
-                if (document.body) { addLocator(); } else { document.addEventListener('DOMContentLoaded', addLocator); }
+                addLocator();
+                if (!locatorAdded) { document.addEventListener('DOMContentLoaded', addLocator); }
             })();
-        </script>
         """
+    }
+
+    /// Reacts to a CMP consent change. A resolved consent is pushed to the live bridge (fast, no
+    /// reload). Clearing consent on a page that previously had a resolved grant **reloads** the feed
+    /// — pushing a snapshot alone leaves Prebid's cached grant in place, so the page is reset so
+    /// Prebid re-initialises with no stale consent.
+    private func pushConsentUpdate() {
+        guard BtaConsent.hasCmpData else {
+            // All consent keys removed. Only act if this page had a resolved consent — otherwise it
+            // is simply "no CMP on first load" and must be left alone.
+            if consentWasResolved {
+                consentWasResolved = false
+                reload()
+            }
+            return
+        }
+        if !bridgeInjectedAtLoad {
+            // CMP data arrived on a page that loaded without the bridge. The feed's Prebid only
+            // configures consent management at init (when __tcfapi already exists), so injecting the
+            // bridge now would not connect it — reload with the bridge present before feed init.
+            reload()
+            return
+        }
+        let snapshot = BtaConsent.updateSnapshot
+        if snapshot.ready {
+            applyConsentSnapshot(snapshot.json)
+            consentWasResolved = true
+        } else if consentWasResolved {
+            // GDPR applies but consent is now unresolved/cleared, and Prebid had a cached grant →
+            // reload so it re-initialises in the pending/no-consent state instead of reusing it.
+            consentWasResolved = false
+            reload()
+        } else {
+            // First-load pending (GDPR set, consent not gathered yet): announce the not-ready bridge
+            // so Prebid waits rather than treating it as completed consent.
+            applyConsentSnapshot(snapshot.json)
+        }
+    }
+
+    /// Updates the live bridge with `json`, or installs the bridge if it arrived after load.
+    private func applyConsentSnapshot(_ json: String) {
+        let data = (try? JSONSerialization.data(withJSONObject: [json])) ?? Data("[\"{}\"]".utf8)
+        guard let literalArray = String(data: data, encoding: .utf8) else { return }
+        // literalArray is `["<json>"]`; strip the brackets to get the quoted JS string literal.
+        let literal = String(literalArray.dropFirst().dropLast())
+        let js = "if (window.__btaTcfApplyUpdate) { window.__btaTcfApplyUpdate(\(literal)); } else { \(Self.tcfBridgeJs(json)) }"
+        webView.evaluateJavaScript(js, completionHandler: nil)
     }
 }
 

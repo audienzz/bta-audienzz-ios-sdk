@@ -21,13 +21,181 @@ enum BtaConsent {
         return (value?.isEmpty == false) ? value : nil
     }
 
-    /// Whether GDPR applies. `1` = applies, `0` = does not. Absent but a TC string exists → applies.
+    /// Whether GDPR applies. `1` = applies, `0` = does not. Absent (or an unreadable/wrongly-typed
+    /// value) but a TC string exists → applies, rather than silently treating it as non-applicable.
     static var gdprApplies: Bool {
-        let defaults = UserDefaults.standard
-        if defaults.object(forKey: Key.gdprApplies) != nil {
-            return defaults.integer(forKey: Key.gdprApplies) == 1
-        }
+        if let v = gdprAppliesInt { return v == 1 }
         return tcString != nil
+    }
+
+    /// Reads `IABTCF_gdprApplies` robustly: a Number (standard) or a mistyped String. Returns `nil`
+    /// when the key is absent or cannot be interpreted.
+    static var gdprAppliesInt: Int? {
+        guard let obj = UserDefaults.standard.object(forKey: Key.gdprApplies) else { return nil }
+        if let n = obj as? NSNumber { return n.intValue == 1 ? 1 : 0 }
+        if let s = (obj as? String)?.trimmingCharacters(in: .whitespaces).lowercased() {
+            if s == "1" || s == "true" { return 1 }
+            if s == "0" || s == "false" { return 0 }
+        }
+        return nil
+    }
+
+    /// Whether a CMP has written any TCF data, so the bridge should be installed/kept updated.
+    static var hasCmpData: Bool {
+        tcString != nil || UserDefaults.standard.object(forKey: Key.gdprApplies) != nil
+    }
+
+    /// A snapshot to push on a consent change: the real decoded one, or an explicit cleared
+    /// (all-denied / honouring GDPR-applies) state when the TC string has been removed — so the
+    /// live page never silently retains the previous grant.
+    static var updateSnapshot: TcfSnapshot {
+        if let real = tcfSnapshot { return real }
+        let d = UserDefaults.standard
+        func int(_ key: String, _ fallback: Int) -> Int {
+            d.object(forKey: key) != nil ? d.integer(forKey: key) : fallback
+        }
+        return buildTcData(TcfInputs(
+            tcString: "",
+            gdprApplies: gdprApplies,
+            purposeConsents: "", purposeLegitimateInterests: "",
+            vendorConsents: "", vendorLegitimateInterests: "",
+            specialFeatureOptIns: "", publisherConsent: "", publisherLegitimateInterests: "",
+            publisherCustomConsents: "", publisherCustomLegitimateInterests: "",
+            publisherRestrictions: [:], publisherCC: "",
+            purposeOneTreatment: false,
+            cmpId: int("IABTCF_CmpSdkID", 0),
+            cmpVersion: int("IABTCF_CmpSdkVersion", 1),
+            tcfPolicyVersion: int("IABTCF_PolicyVersion", 4)
+        ))
+    }
+
+    /// Raw decoded IAB TCF v2 values read from storage, fed to ``buildTcData(_:)``.
+    struct TcfInputs {
+        let tcString: String
+        let gdprApplies: Bool
+        let purposeConsents: String?
+        let purposeLegitimateInterests: String?
+        let vendorConsents: String?
+        let vendorLegitimateInterests: String?
+        let specialFeatureOptIns: String?
+        let publisherConsent: String?
+        let publisherLegitimateInterests: String?
+        let publisherCustomConsents: String?
+        let publisherCustomLegitimateInterests: String?
+        /// purposeId → per-vendor restriction string ('0'/'1'/'2' = type, other char = none).
+        let publisherRestrictions: [Int: String]
+        let publisherCC: String
+        let purposeOneTreatment: Bool
+        let cmpId: Int
+        let cmpVersion: Int
+        let tcfPolicyVersion: Int
+    }
+
+    /// A ready-to-inject TCData JSON payload plus whether the CMP snapshot is complete.
+    struct TcfSnapshot {
+        let json: String
+        let ready: Bool
+    }
+
+    /// Builds an IAB TCF v2.2 `TCData` object (as JSON) from decoded CMP values. Pure, so it is
+    /// unit-testable without storage. See the Android `buildTcData` for the shared contract:
+    /// 1-based `{id: bool}` maps, missing grants never defaulted to granted, publisher restrictions
+    /// parsed into `{purposeId: {vendorId: type}}` (non-`0/1/2` chars dropped), `ready`/`cmpuishown`
+    /// when decoded grants are not yet written, and no fabricated GVL metadata.
+    static func buildTcData(_ inp: TcfInputs) -> TcfSnapshot {
+        // Ready only when the decoded grants Prebid reads (purpose AND vendor) are written, and —
+        // when GDPR applies — a non-empty TC string is present. Prebid rejects an empty TC string
+        // under GDPR, so an empty one must report a not-ready status, never `tcloaded`.
+        let ready = inp.purposeConsents != nil &&
+            inp.vendorConsents != nil &&
+            (!inp.gdprApplies || !inp.tcString.isEmpty)
+
+        func bits(_ s: String?) -> [String: Bool] {
+            guard let s = s else { return [:] }
+            var o: [String: Bool] = [:]
+            for (i, c) in s.enumerated() { o[String(i + 1)] = (c == "1") }
+            return o
+        }
+
+        var restrictions: [String: [String: Int]] = [:]
+        for (purpose, s) in inp.publisherRestrictions {
+            var entry: [String: Int] = [:]
+            for (i, c) in s.enumerated() where c == "0" || c == "1" || c == "2" {
+                entry[String(i + 1)] = Int(String(c))!
+            }
+            if !entry.isEmpty { restrictions[String(purpose)] = entry }
+        }
+
+        let publisher: [String: Any] = [
+            "consents": bits(inp.publisherConsent),
+            "legitimateInterests": bits(inp.publisherLegitimateInterests),
+            "customPurpose": [
+                "consents": bits(inp.publisherCustomConsents),
+                "legitimateInterests": bits(inp.publisherCustomLegitimateInterests),
+            ],
+            "restrictions": restrictions,
+        ]
+
+        let tcData: [String: Any] = [
+            "tcString": inp.tcString,
+            "gdprApplies": inp.gdprApplies,
+            "eventStatus": ready ? "tcloaded" : "cmpuishown",
+            "cmpStatus": "loaded",
+            "cmpId": inp.cmpId,
+            "cmpVersion": inp.cmpVersion,
+            "tcfPolicyVersion": inp.tcfPolicyVersion,
+            "isServiceSpecific": true,
+            "purposeOneTreatment": inp.purposeOneTreatment,
+            "publisherCC": inp.publisherCC,
+            "purpose": [
+                "consents": bits(inp.purposeConsents),
+                "legitimateInterests": bits(inp.purposeLegitimateInterests),
+            ],
+            "vendor": [
+                "consents": bits(inp.vendorConsents),
+                "legitimateInterests": bits(inp.vendorLegitimateInterests),
+            ],
+            "specialFeatureOptins": bits(inp.specialFeatureOptIns),
+            "publisher": publisher,
+        ]
+
+        let data = (try? JSONSerialization.data(withJSONObject: tcData, options: [.sortedKeys])) ?? Data("{}".utf8)
+        let json = String(data: data, encoding: .utf8) ?? "{}"
+        return TcfSnapshot(json: json, ready: ready)
+    }
+
+    /// Reads the full decoded TCF consent from storage and builds a snapshot, or `nil` when no
+    /// TC string is stored.
+    static var tcfSnapshot: TcfSnapshot? {
+        guard let tc = tcString else { return nil }
+        let d = UserDefaults.standard
+        func str(_ key: String) -> String? { d.string(forKey: key) }
+        func int(_ key: String, _ fallback: Int) -> Int {
+            d.object(forKey: key) != nil ? d.integer(forKey: key) : fallback
+        }
+        var restrictions: [Int: String] = [:]
+        for purpose in 1...24 {
+            if let s = str("IABTCF_PublisherRestrictions\(purpose)"), !s.isEmpty { restrictions[purpose] = s }
+        }
+        return buildTcData(TcfInputs(
+            tcString: tc,
+            gdprApplies: gdprApplies,
+            purposeConsents: str(Key.purposeConsents),
+            purposeLegitimateInterests: str("IABTCF_PurposeLegitimateInterests"),
+            vendorConsents: str("IABTCF_VendorConsents"),
+            vendorLegitimateInterests: str("IABTCF_VendorLegitimateInterests"),
+            specialFeatureOptIns: str("IABTCF_SpecialFeaturesOptIns"),
+            publisherConsent: str("IABTCF_PublisherConsent"),
+            publisherLegitimateInterests: str("IABTCF_PublisherLegitimateInterests"),
+            publisherCustomConsents: str("IABTCF_PublisherCustomPurposesConsents"),
+            publisherCustomLegitimateInterests: str("IABTCF_PublisherCustomPurposesLegitimateInterests"),
+            publisherRestrictions: restrictions,
+            publisherCC: str("IABTCF_PublisherCC") ?? "",
+            purposeOneTreatment: int("IABTCF_PurposeOneTreatment", 0) == 1,
+            cmpId: int("IABTCF_CmpSdkID", 0),
+            cmpVersion: int("IABTCF_CmpSdkVersion", 1),
+            tcfPolicyVersion: int("IABTCF_PolicyVersion", 4)
+        ))
     }
 
     /// Whether analytics collection/sending is permitted under the current consent.
@@ -38,12 +206,10 @@ enum BtaConsent {
     /// CMP present (no TCF data) or when GDPR does not apply, analytics runs as before, so a
     /// publisher without a CMP is not silently regressed.
     static var analyticsAllowed: Bool {
-        let defaults = UserDefaults.standard
-        // `IABTCF_gdprApplies` is stored as an Int (1/0); nil = the key is absent.
-        let gdprApplies: Int? = defaults.object(forKey: Key.gdprApplies) != nil
-            ? defaults.integer(forKey: Key.gdprApplies)
-            : nil
-        let purposeConsents = defaults.string(forKey: Key.purposeConsents)
+        // Read the flag robustly; if it is present but unreadable/wrongly-typed, fall back to
+        // "applies" whenever a TC string exists rather than silently allowing analytics.
+        let gdprApplies: Int? = gdprAppliesInt ?? (tcString != nil ? 1 : nil)
+        let purposeConsents = UserDefaults.standard.string(forKey: Key.purposeConsents)
         return analyticsDecision(gdprApplies: gdprApplies, purposeConsents: purposeConsents)
     }
 

@@ -31,6 +31,7 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
     let pageUrl: String
     var debug: Bool = false
     var mockRecommendations: Bool = false
+    var mockAds: Bool = false
     var isDarkMode: Bool? = nil
     var reloadToken: AnyHashable? = nil
     var isLoadingHolderEnabled: Bool = true
@@ -71,6 +72,7 @@ public struct BtaFeedSwiftUI: UIViewRepresentable {
                 pageUrl: pageUrl,
                 debug: debug,
                 mockRecommendations: mockRecommendations,
+                mockAds: mockAds,
                 isDarkMode: isDarkMode,
                 isLoadingHolderEnabled: isLoadingHolderEnabled,
                 fontStyleUrls: fontStyleUrls
@@ -144,6 +146,12 @@ public extension BtaFeedSwiftUI {
 
     func mockRecommendations(_ enabled: Bool) -> Self {
         var copy = self; copy.mockRecommendations = enabled; return copy
+    }
+
+    /// Show mock/test ad creatives (the violet test banner) instead of running the real ad
+    /// auction. Useful for verifying ad slots in test builds (**testing only**).
+    func mockAds(_ enabled: Bool) -> Self {
+        var copy = self; copy.mockAds = enabled; return copy
     }
 
     func isDarkMode(_ value: Bool?) -> Self {
