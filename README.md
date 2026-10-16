@@ -355,27 +355,30 @@ Your CMP must write the standard TCF keys (`IABTCF_TCString`, `IABTCF_gdprApplie
 
 ## Debugging
 
-Pass `debug: true` and `mockRecommendations: true` to `load()` (or the corresponding SwiftUI modifiers) to exercise the feed without a live configuration:
+Pass the testing flags to `load()` (or the corresponding SwiftUI modifiers) to exercise the feed without a live configuration:
 
 ```swift
 // UIKit
 btaFeedView.load(
     btaFeedId: "your-bta-feed-id",
     debug: true,
-    mockRecommendations: true
+    mockRecommendations: true,
+    mockAds: true
 )
 
 // SwiftUI
 BtaFeedSwiftUI(btaFeedId: "your-bta-feed-id")
     .debug(true)
     .mockRecommendations(true)
+    .mockAds(true)
 ```
 
-> ⚠️ **These flags are for testing only — they suppress real content and ads.**
-> - `debug: true` puts the widget in **debug mode**, which shows a **debug/test banner instead of live ads**.
+> ⚠️ **These flags are for testing only — set them all to `false` in production.**
+> - `debug: true` enables the widget's **debug logging** (it does *not* change what's displayed).
 > - `mockRecommendations: true` shows **fake recommendations** instead of real ones.
+> - `mockAds: true` shows **mock/test ad creatives** (the violet test banner) instead of running the real ad auction. Use this to verify ad slots in test builds, where real demand won't fill.
 >
-> If you see only recommendations, no advertising, or just a debug banner, check these flags first.
+> If you see no advertising in a test build, that's expected unless `mockAds: true` — real ads need production, a modern WebView, consent, and registered inventory.
 > For production — and to see **real recommendations and real ads** — call `load()` with **both `false`** (the defaults):
 > ```swift
 > btaFeedView.load(btaFeedId: "your-bta-feed-id", pageUrl: "https://your-site.com/the-article")

@@ -54,6 +54,7 @@ public final class BtaFeedView: UIView {
         let pageUrl: String
         let debug: Bool
         let mockRecommendations: Bool
+        let mockAds: Bool
         let isDarkMode: Bool?
         let isLoadingHolderEnabled: Bool
         let fontStyleUrls: [String]
@@ -128,10 +129,13 @@ public final class BtaFeedView: UIView {
     ///   - btaFeedId: The feed identifier provided by Audienzz.
     ///   - pageUrl: The canonical URL of the article/page hosting the feed.
     ///              Used by the feed widget for contextual recommendations.
-    ///   - debug: Put the feed widget in debug mode — shows a debug/test banner instead of live
-    ///     ads (**testing only; must be `false` in production and to see real ads**).
+    ///   - debug: Enable the feed widget's debug logging (**testing only; must be `false` in
+    ///     production**). This does **not** show a test ad — use `mockAds` for that.
     ///   - mockRecommendations: Show mock (fake) recommendations instead of real ones
     ///     (**testing only; must be `false` in production and to see real content**).
+    ///   - mockAds: Show mock/test ad creatives (the violet test banner) instead of running the
+    ///     real ad auction. Useful for verifying ad slots in test builds where real demand won't
+    ///     fill (**testing only; must be `false` in production and to see real ads**).
     ///   - isDarkMode: Override the color scheme: `true` forces dark theme, `false` forces
     ///     light theme, `nil` (default) auto-detects from the system via `prefers-color-scheme`.
     ///   - isLoadingHolderEnabled: When `true` (default), the SDK reserves height and shows a
@@ -146,6 +150,7 @@ public final class BtaFeedView: UIView {
         pageUrl: String,
         debug: Bool = false,
         mockRecommendations: Bool = false,
+        mockAds: Bool = false,
         isDarkMode: Bool? = nil,
         isLoadingHolderEnabled: Bool = true,
         fontStyleUrls: [String] = BtaFeedView.defaultFontStyleUrls
@@ -168,7 +173,7 @@ public final class BtaFeedView: UIView {
         isRecovering = false // a fresh, user-initiated load supersedes any recovery
         returnGrowGuardActive = false // ...and supersedes the return grow-guard
         performLoad(
-            LoadParams(btaFeedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations, isDarkMode: isDarkMode, isLoadingHolderEnabled: isLoadingHolderEnabled, fontStyleUrls: fontStyleUrls),
+            LoadParams(btaFeedId: btaFeedId, pageUrl: pageUrl, debug: debug, mockRecommendations: mockRecommendations, mockAds: mockAds, isDarkMode: isDarkMode, isLoadingHolderEnabled: isLoadingHolderEnabled, fontStyleUrls: fontStyleUrls),
             resetHeight: true
         )
     }
@@ -289,6 +294,7 @@ public final class BtaFeedView: UIView {
             pageUrl: params.pageUrl,
             debug: params.debug,
             mockRecommendations: params.mockRecommendations,
+            mockAds: params.mockAds,
             isDarkMode: params.isDarkMode,
             fontStyleUrls: params.fontStyleUrls
         )
@@ -538,9 +544,10 @@ public final class BtaFeedView: UIView {
 
     // MARK: - HTML template
 
-    private func buildHTML(feedId: String, pageUrl: String, debug: Bool, mockRecommendations: Bool, isDarkMode: Bool?, fontStyleUrls: [String]) -> String {
+    private func buildHTML(feedId: String, pageUrl: String, debug: Bool, mockRecommendations: Bool, mockAds: Bool, isDarkMode: Bool?, fontStyleUrls: [String]) -> String {
         let debugLine = debug ? "debug: true," : ""
         let mockLine  = mockRecommendations ? "mockRecommendations: true," : ""
+        let mockAdsLine = mockAds ? "mockAds: true," : ""
         let darkLine: String
         switch isDarkMode {
         case .some(true):  darkLine = "forceDarkTheme: true,"
@@ -584,6 +591,7 @@ public final class BtaFeedView: UIView {
                             webview: true,
                             \(debugLine)
                             \(mockLine)
+                            \(mockAdsLine)
                             \(darkLine)
                             onArticleClick: function(payload) {
                                 payload.event.preventDefault();
