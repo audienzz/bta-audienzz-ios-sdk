@@ -71,8 +71,15 @@ final class BtaConsentTcfDataTests: XCTestCase {
         XCTAssertEqual(d["eventStatus"] as? String, "cmpuishown")
     }
 
-    func testPresentPurposeConsentsReadyTcloaded() {
-        let snap = BtaConsent.buildTcData(inputs(purposeConsents: ""))
+    func testPurposePresentVendorAbsentNotReady() {
+        let snap = BtaConsent.buildTcData(inputs(purposeConsents: "1", vendorConsents: nil))
+        XCTAssertFalse(snap.ready)
+        let d = try! JSONSerialization.jsonObject(with: Data(snap.json.utf8)) as! [String: Any]
+        XCTAssertEqual(d["eventStatus"] as? String, "cmpuishown")
+    }
+
+    func testPurposeAndVendorPresentReadyTcloaded() {
+        let snap = BtaConsent.buildTcData(inputs(purposeConsents: "", vendorConsents: ""))
         XCTAssertTrue(snap.ready)
         let d = try! JSONSerialization.jsonObject(with: Data(snap.json.utf8)) as! [String: Any]
         XCTAssertEqual(d["eventStatus"] as? String, "tcloaded")
@@ -109,7 +116,7 @@ final class BtaConsentTcfDataTests: XCTestCase {
         XCTAssertEqual(d["cmpVersion"] as? Int, 9)
         XCTAssertEqual(d["tcfPolicyVersion"] as? Int, 4)
         XCTAssertNil(d["gvlVersion"], "gvlVersion must not be fabricated")
-        XCTAssertNotNil(d["useNonStandardTexts"], "TCF 2.2 field")
+        XCTAssertNil(d["useNonStandardTexts"], "not sourced from storage → omitted")
         XCTAssertNil(d["useNonStandardStacks"], "TCF 2.0 field should be gone")
     }
 }

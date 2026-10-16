@@ -155,12 +155,18 @@ public final class BtaFeedView: UIView {
         isLoadingHolderEnabled: Bool = true,
         fontStyleUrls: [String] = BtaFeedView.defaultFontStyleUrls
     ) {
+        // destroy() (called from viewWillDisappear) removes the consent observer, so restart it on
+        // every load() — otherwise consent changes stop reaching the WebView after the first return.
+        startConsentObserver()
+
         // Suppress reload when returning from the ad/article WebView for the same feed.
         // Still re-attach bridge handlers — destroy() may have removed them when the
         // fullscreen modal caused viewWillDisappear to fire on the parent view controller.
         if suppressNextLoad && btaFeedId == currentFeedId {
             suppressNextLoad = false
             rebuildBridge(btaFeedId: btaFeedId)
+            // Reconcile current consent into the preserved page (it may have changed while away).
+            pushConsentUpdate()
             // The WKWebView content is preserved and was already correctly sized before we left.
             // While it repaints coming back on-screen it can transiently under-report its height,
             // which would clip the (complete) feed and get worse over the settle passes — so guard
@@ -406,6 +412,7 @@ public final class BtaFeedView: UIView {
     /// Watches `UserDefaults` for CMP consent changes and pushes them to the live bridge (debounced)
     /// so withdrawn/updated consent reaches in-page auctions without a full reload.
     private func startConsentObserver() {
+        guard consentObserver == nil else { return } // idempotent — safe to call on every load()
         consentObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
             object: nil,
@@ -757,23 +764,27 @@ public final class BtaFeedView: UIView {
     /// (Prebid) inside the feed picks up the user's consent. Returns "" when no consent string
     /// is stored yet — the feed then behaves exactly as before.
     private static func tcfConsentScript() -> String {
-        guard let snapshot = BtaConsent.tcfSnapshot else { return "" }
-        return tcfBridgeScript(snapshot.json)
+        // Install the bridge whenever a CMP is present. When the TC string has not been written yet
+        // but the CMP is active (gdprApplies set), inject a pending/cleared snapshot so the bridge
+        // exists and a later consent update can reach it (and in-page auctions wait for readiness).
+        guard BtaConsent.hasCmpData else { return "" }
+        return "<script type=\"text/javascript\">\(tcfBridgeJs(BtaConsent.updateSnapshot.json))</script>"
     }
 
-    /// Builds the `__tcfapi` CMP stub that serves a **full** TCData object (decoded purpose/vendor/
-    /// special-feature/publisher consents and restrictions, built in `BtaConsent.buildTcData`).
+    /// The `__tcfapi` CMP-stub JavaScript (without the `<script>` wrapper, so it can also be injected
+    /// at runtime via `evaluateJavaScript`). Serves a **full** TCData object (decoded purpose/vendor/
+    /// special-feature/publisher consents and restrictions, built in `BtaConsent.buildTcData`);
     /// Prebid enforcement reads `purpose.consents` / `vendor.consents`, so these must be present or
     /// every bidder is blocked.
     ///
-    /// The payload is a single JSON blob; only `<` is escaped (to `<`) so a malformed stored
-    /// value cannot break out of the `<script>` — JSON already escapes quotes/backslashes/newlines.
-    /// The stub supports real add/removeEventListener with unique ids, and `pushConsentUpdate()`
-    /// calls `window.__btaTcfApplyUpdate` so withdrawn/updated consent reaches in-page auctions.
-    static func tcfBridgeScript(_ tcDataJson: String) -> String {
+    /// The payload is a single JSON blob with `<` escaped to `<` so a malformed stored value
+    /// cannot break out of an inline `<script>`. Supports real add/removeEventListener with unique
+    /// ids; each listener is dispatched in its own try/catch so one throwing callback cannot starve
+    /// the others. `window.__btaTcfApplyUpdate` replaces the live snapshot and re-notifies listeners,
+    /// preserving the snapshot's readiness (a not-ready update stays `cmpuishown`).
+    static func tcfBridgeJs(_ tcDataJson: String) -> String {
         let safe = tcDataJson.replacingOccurrences(of: "<", with: "\\u003c")
         return """
-        <script type="text/javascript">
             (function() {
                 var base = \(safe);
                 var listeners = {}, nextId = 0;
@@ -799,15 +810,18 @@ public final class BtaFeedView: UIView {
                     } catch (e) {}
                 }
                 window.__btaTcfApplyUpdate = function(json) {
-                    try {
-                        base = JSON.parse(json);
-                        for (var id in listeners) {
-                            if (!listeners.hasOwnProperty(id)) { continue; }
+                    var next;
+                    try { next = JSON.parse(json); } catch (e) { return; }
+                    base = next;
+                    var status = (base.eventStatus === 'tcloaded') ? 'useractioncomplete' : base.eventStatus;
+                    for (var id in listeners) {
+                        if (!listeners.hasOwnProperty(id)) { continue; }
+                        try {
                             var ev = snap(parseInt(id, 10));
-                            ev.eventStatus = 'useractioncomplete';
+                            ev.eventStatus = status;
                             listeners[id](ev, true);
-                        }
-                    } catch (e) {}
+                        } catch (e) {}
+                    }
                 };
                 if (typeof window.__tcfapi !== 'function') { window.__tcfapi = run; }
                 window.addEventListener('message', function(e) {
@@ -831,19 +845,21 @@ public final class BtaFeedView: UIView {
                 addLocator();
                 if (!locatorAdded) { document.addEventListener('DOMContentLoaded', addLocator); }
             })();
-        </script>
         """
     }
 
     /// Re-reads consent from storage and pushes it to the live bridge so in-page auctions see the
-    /// change (e.g. the user withdraws consent) without a full reload. No-op before the bridge loads.
+    /// change — including withdrawal (cleared TC string → explicit all-denied state) and consent
+    /// that arrives after the page loaded (installs the bridge if it is not present yet).
     private func pushConsentUpdate() {
-        guard let snapshot = BtaConsent.tcfSnapshot else { return }
-        let data = (try? JSONSerialization.data(withJSONObject: [snapshot.json])) ?? Data("[\"{}\"]".utf8)
+        guard BtaConsent.hasCmpData else { return }
+        let json = BtaConsent.updateSnapshot.json
+        let data = (try? JSONSerialization.data(withJSONObject: [json])) ?? Data("[\"{}\"]".utf8)
         guard let literalArray = String(data: data, encoding: .utf8) else { return }
         // literalArray is `["<json>"]`; strip the brackets to get the quoted JS string literal.
         let literal = String(literalArray.dropFirst().dropLast())
-        webView.evaluateJavaScript("window.__btaTcfApplyUpdate && window.__btaTcfApplyUpdate(\(literal))", completionHandler: nil)
+        let js = "if (window.__btaTcfApplyUpdate) { window.__btaTcfApplyUpdate(\(literal)); } else { \(Self.tcfBridgeJs(json)) }"
+        webView.evaluateJavaScript(js, completionHandler: nil)
     }
 }
 
