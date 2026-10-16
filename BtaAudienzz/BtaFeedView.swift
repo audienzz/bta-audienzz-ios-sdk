@@ -304,6 +304,7 @@ public final class BtaFeedView: UIView {
     /// Release resources. Call from `viewWillDisappear` or the owning object's `deinit`.
     public func destroy() {
         stopViewabilityTimer()
+        stopConsentObserver()
         // When navigating to an article, suppress in-progress resource loads being cancelled —
         // the WebView should keep its content intact so returning looks seamless.
         if !suppressNextLoad {
@@ -393,6 +394,42 @@ public final class BtaFeedView: UIView {
             loadingIndicator.centerXAnchor.constraint(equalTo: centerXAnchor),
             loadingIndicator.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+
+        startConsentObserver()
+    }
+
+    // MARK: - Consent observer
+
+    private var consentObserver: NSObjectProtocol?
+    private var consentPushWorkItem: DispatchWorkItem?
+
+    /// Watches `UserDefaults` for CMP consent changes and pushes them to the live bridge (debounced)
+    /// so withdrawn/updated consent reaches in-page auctions without a full reload.
+    private func startConsentObserver() {
+        consentObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.consentPushWorkItem?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.pushConsentUpdate() }
+            self.consentPushWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+        }
+    }
+
+    private func stopConsentObserver() {
+        consentPushWorkItem?.cancel()
+        consentPushWorkItem = nil
+        if let observer = consentObserver {
+            NotificationCenter.default.removeObserver(observer)
+            consentObserver = nil
+        }
+    }
+
+    deinit {
+        stopConsentObserver()
     }
 
     /// Toggle the initial-load loading state. When enabled, reserves ``loadingHeight`` and
@@ -720,74 +757,58 @@ public final class BtaFeedView: UIView {
     /// (Prebid) inside the feed picks up the user's consent. Returns "" when no consent string
     /// is stored yet — the feed then behaves exactly as before.
     private static func tcfConsentScript() -> String {
-        guard let data = BtaConsent.tcfData else { return "" }
-        return tcfBridgeScript(data)
+        guard let snapshot = BtaConsent.tcfSnapshot else { return "" }
+        return tcfBridgeScript(snapshot.json)
     }
 
-    /// Builds the `__tcfapi` CMP stub (same-frame function + cross-frame postMessage locator)
-    /// that serves a **full** TCData object — decoded purpose/vendor/special-feature/publisher
-    /// consents, not just the TC string — to anything in the feed document that reads TCF v2.
-    /// Prebid's TCF enforcement reads `purpose.consents` / `vendor.consents`, so these must be
-    /// present or every bidder is blocked.
-    static func tcfBridgeScript(_ d: BtaConsent.TcfData) -> String {
-        func esc(_ s: String) -> String {
-            s.replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "\"", with: "\\\"")
-        }
-        let tc = esc(d.tcString)
-        let ga = d.gdprApplies ? "true" : "false"
-        let p1t = d.purposeOneTreatment ? "true" : "false"
-        let pcc = esc(d.publisherCC)
-        let pc = esc(d.purposeConsents)
-        let pli = esc(d.purposeLegitimateInterests)
-        let vc = esc(d.vendorConsents)
-        let vli = esc(d.vendorLegitimateInterests)
-        let sf = esc(d.specialFeatureOptins)
-        let pubC = esc(d.publisherConsent)
-        let pubLI = esc(d.publisherLegitimateInterests)
-        let cmpId = d.cmpId
-        let policyVer = d.tcfPolicyVersion
+    /// Builds the `__tcfapi` CMP stub that serves a **full** TCData object (decoded purpose/vendor/
+    /// special-feature/publisher consents and restrictions, built in `BtaConsent.buildTcData`).
+    /// Prebid enforcement reads `purpose.consents` / `vendor.consents`, so these must be present or
+    /// every bidder is blocked.
+    ///
+    /// The payload is a single JSON blob; only `<` is escaped (to `<`) so a malformed stored
+    /// value cannot break out of the `<script>` — JSON already escapes quotes/backslashes/newlines.
+    /// The stub supports real add/removeEventListener with unique ids, and `pushConsentUpdate()`
+    /// calls `window.__btaTcfApplyUpdate` so withdrawn/updated consent reaches in-page auctions.
+    static func tcfBridgeScript(_ tcDataJson: String) -> String {
+        let safe = tcDataJson.replacingOccurrences(of: "<", with: "\\u003c")
         return """
         <script type="text/javascript">
             (function() {
-                var tc = "\(tc)";
-                var ga = \(ga);
-                function bits(s) { var o = {}; for (var i = 0; i < s.length; i++) { o[i + 1] = s.charAt(i) === '1'; } return o; }
-                var purposeConsents = bits("\(pc)");
-                var purposeLI = bits("\(pli)");
-                var vendorConsents = bits("\(vc)");
-                var vendorLI = bits("\(vli)");
-                var specialFeatureOptins = bits("\(sf)");
-                var publisherConsents = bits("\(pubC)");
-                var publisherLI = bits("\(pubLI)");
-                function data(id) {
-                    return {
-                        tcString: tc, gdprApplies: ga,
-                        eventStatus: 'tcloaded', cmpStatus: 'loaded',
-                        cmpId: \(cmpId), cmpVersion: 1, gvlVersion: 0, tcfPolicyVersion: \(policyVer),
-                        isServiceSpecific: true, useNonStandardStacks: false,
-                        purposeOneTreatment: \(p1t), publisherCC: "\(pcc)",
-                        purpose: { consents: purposeConsents, legitimateInterests: purposeLI },
-                        vendor: { consents: vendorConsents, legitimateInterests: vendorLI },
-                        specialFeatureOptins: specialFeatureOptins,
-                        publisher: {
-                            consents: publisherConsents,
-                            legitimateInterests: publisherLI,
-                            customPurpose: { consents: {}, legitimateInterests: {} },
-                            restrictions: {}
-                        },
-                        listenerId: id
-                    };
+                var base = \(safe);
+                var listeners = {}, nextId = 0;
+                function snap(listenerId) {
+                    var d = JSON.parse(JSON.stringify(base));
+                    if (listenerId !== undefined) { d.listenerId = listenerId; }
+                    return d;
                 }
                 function run(cmd, ver, cb, arg) {
                     try {
-                        if (cmd === 'ping') { cb({ gdprApplies: ga, cmpLoaded: true, cmpStatus: 'loaded', displayStatus: 'hidden', apiVersion: '2.2', cmpId: \(cmpId), cmpVersion: 1, gvlVersion: 0, tcfPolicyVersion: \(policyVer) }); }
-                        else if (cmd === 'getTCData') { cb(data(undefined), true); }
-                        else if (cmd === 'addEventListener') { cb(data(0), true); }
-                        else if (cmd === 'removeEventListener') { cb(true, true); }
+                        if (cmd === 'ping') {
+                            cb({ gdprApplies: base.gdprApplies, cmpLoaded: true, cmpStatus: base.cmpStatus, displayStatus: 'hidden', apiVersion: '2.2', cmpId: base.cmpId, cmpVersion: base.cmpVersion, tcfPolicyVersion: base.tcfPolicyVersion });
+                            return;
+                        }
+                        if (ver !== undefined && ver !== null && ver !== 2) { cb(null, false); return; }
+                        if (cmd === 'getTCData') { cb(snap(undefined), true); }
+                        else if (cmd === 'addEventListener') { var id = nextId++; listeners[id] = cb; cb(snap(id), true); }
+                        else if (cmd === 'removeEventListener') {
+                            if (typeof arg === 'number' && listeners.hasOwnProperty(arg)) { delete listeners[arg]; cb(true, true); }
+                            else { cb(false, false); }
+                        }
                         else { cb(null, false); }
                     } catch (e) {}
                 }
+                window.__btaTcfApplyUpdate = function(json) {
+                    try {
+                        base = JSON.parse(json);
+                        for (var id in listeners) {
+                            if (!listeners.hasOwnProperty(id)) { continue; }
+                            var ev = snap(parseInt(id, 10));
+                            ev.eventStatus = 'useractioncomplete';
+                            listeners[id](ev, true);
+                        }
+                    } catch (e) {}
+                };
                 if (typeof window.__tcfapi !== 'function') { window.__tcfapi = run; }
                 window.addEventListener('message', function(e) {
                     var d = e.data, p;
@@ -798,16 +819,31 @@ public final class BtaFeedView: UIView {
                         e.source.postMessage((typeof d === 'string') ? JSON.stringify(r) : r, '*');
                     }, c.parameter);
                 }, false);
+                var locatorAdded = false;
                 function addLocator() {
-                    if (window.frames['__tcfapiLocator']) { return; }
+                    if (locatorAdded || window.frames['__tcfapiLocator']) { return; }
+                    var parent = document.body || document.documentElement;
+                    if (!parent) { return; }
                     var f = document.createElement('iframe');
                     f.style.cssText = 'display:none'; f.name = '__tcfapiLocator';
-                    (document.body || document.documentElement).appendChild(f);
+                    parent.appendChild(f); locatorAdded = true;
                 }
-                if (document.body) { addLocator(); } else { document.addEventListener('DOMContentLoaded', addLocator); }
+                addLocator();
+                if (!locatorAdded) { document.addEventListener('DOMContentLoaded', addLocator); }
             })();
         </script>
         """
+    }
+
+    /// Re-reads consent from storage and pushes it to the live bridge so in-page auctions see the
+    /// change (e.g. the user withdraws consent) without a full reload. No-op before the bridge loads.
+    private func pushConsentUpdate() {
+        guard let snapshot = BtaConsent.tcfSnapshot else { return }
+        let data = (try? JSONSerialization.data(withJSONObject: [snapshot.json])) ?? Data("[\"{}\"]".utf8)
+        guard let literalArray = String(data: data, encoding: .utf8) else { return }
+        // literalArray is `["<json>"]`; strip the brackets to get the quoted JS string literal.
+        let literal = String(literalArray.dropFirst().dropLast())
+        webView.evaluateJavaScript("window.__btaTcfApplyUpdate && window.__btaTcfApplyUpdate(\(literal))", completionHandler: nil)
     }
 }
 
