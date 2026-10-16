@@ -74,6 +74,10 @@ public final class BtaFeedView: UIView {
     /// the blank-on-return branch can't both reload at once. Cleared once content returns.
     private var isRecovering = false
 
+    /// Whether the currently-loaded page was given a resolved (valid, GDPR-complete) consent. Used
+    /// to tell "no CMP on first load" apart from "consent cleared on an existing page".
+    private var consentWasResolved = false
+
     /// While true (the ~1s window right after returning from an article), height updates may
     /// only GROW — never shrink. Prevents a transient under-reported height from clipping the
     /// (complete) feed as the WKWebView repaints on-screen.
@@ -304,6 +308,9 @@ public final class BtaFeedView: UIView {
             isDarkMode: params.isDarkMode,
             fontStyleUrls: params.fontStyleUrls
         )
+        // Record whether this page was given a resolved consent, so a later clearing of consent can
+        // be distinguished from "no CMP on first load" and reset Prebid by reloading.
+        consentWasResolved = BtaConsent.hasCmpData && BtaConsent.updateSnapshot.ready
         webView.loadHTMLString(html, baseURL: URL(string: Self.cdnBaseURL))
     }
 
@@ -848,12 +855,38 @@ public final class BtaFeedView: UIView {
         """
     }
 
-    /// Re-reads consent from storage and pushes it to the live bridge so in-page auctions see the
-    /// change — including withdrawal (cleared TC string → explicit all-denied state) and consent
-    /// that arrives after the page loaded (installs the bridge if it is not present yet).
+    /// Reacts to a CMP consent change. A resolved consent is pushed to the live bridge (fast, no
+    /// reload). Clearing consent on a page that previously had a resolved grant **reloads** the feed
+    /// — pushing a snapshot alone leaves Prebid's cached grant in place, so the page is reset so
+    /// Prebid re-initialises with no stale consent.
     private func pushConsentUpdate() {
-        guard BtaConsent.hasCmpData else { return }
-        let json = BtaConsent.updateSnapshot.json
+        guard BtaConsent.hasCmpData else {
+            // All consent keys removed. Only act if this page had a resolved consent — otherwise it
+            // is simply "no CMP on first load" and must be left alone.
+            if consentWasResolved {
+                consentWasResolved = false
+                reload()
+            }
+            return
+        }
+        let snapshot = BtaConsent.updateSnapshot
+        if snapshot.ready {
+            applyConsentSnapshot(snapshot.json)
+            consentWasResolved = true
+        } else if consentWasResolved {
+            // GDPR applies but consent is now unresolved/cleared, and Prebid had a cached grant →
+            // reload so it re-initialises in the pending/no-consent state instead of reusing it.
+            consentWasResolved = false
+            reload()
+        } else {
+            // First-load pending (GDPR set, consent not gathered yet): announce the not-ready bridge
+            // so Prebid waits rather than treating it as completed consent.
+            applyConsentSnapshot(snapshot.json)
+        }
+    }
+
+    /// Updates the live bridge with `json`, or installs the bridge if it arrived after load.
+    private func applyConsentSnapshot(_ json: String) {
         let data = (try? JSONSerialization.data(withJSONObject: [json])) ?? Data("[\"{}\"]".utf8)
         guard let literalArray = String(data: data, encoding: .utf8) else { return }
         // literalArray is `["<json>"]`; strip the brackets to get the quoted JS string literal.

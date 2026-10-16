@@ -6,6 +6,8 @@ import XCTest
 final class BtaConsentTcfDataTests: XCTestCase {
 
     private func inputs(
+        tcString: String = "CPtest",
+        gdprApplies: Bool = true,
         purposeConsents: String? = "1111111111",
         purposeLI: String? = "",
         vendorConsents: String? = "",
@@ -23,8 +25,8 @@ final class BtaConsentTcfDataTests: XCTestCase {
         policyVersion: Int = 4
     ) -> BtaConsent.TcfInputs {
         BtaConsent.TcfInputs(
-            tcString: "CPtest",
-            gdprApplies: true,
+            tcString: tcString,
+            gdprApplies: gdprApplies,
             purposeConsents: purposeConsents,
             purposeLegitimateInterests: purposeLI,
             vendorConsents: vendorConsents,
@@ -84,6 +86,20 @@ final class BtaConsentTcfDataTests: XCTestCase {
         let d = try! JSONSerialization.jsonObject(with: Data(snap.json.utf8)) as! [String: Any]
         XCTAssertEqual(d["eventStatus"] as? String, "tcloaded")
         XCTAssertTrue(((d["purpose"] as! [String: Any])["consents"] as! [String: Bool]).isEmpty)
+    }
+
+    func testEmptyTcStringUnderGdprNotReady() {
+        let snap = BtaConsent.buildTcData(inputs(tcString: "", gdprApplies: true, purposeConsents: "", vendorConsents: ""))
+        XCTAssertFalse(snap.ready)
+        let d = try! JSONSerialization.jsonObject(with: Data(snap.json.utf8)) as! [String: Any]
+        XCTAssertEqual(d["eventStatus"] as? String, "cmpuishown")
+    }
+
+    func testEmptyTcStringWithoutGdprReady() {
+        let snap = BtaConsent.buildTcData(inputs(tcString: "", gdprApplies: false, purposeConsents: "", vendorConsents: ""))
+        XCTAssertTrue(snap.ready)
+        let d = try! JSONSerialization.jsonObject(with: Data(snap.json.utf8)) as! [String: Any]
+        XCTAssertEqual(d["eventStatus"] as? String, "tcloaded")
     }
 
     func testPublisherRestrictionPreservesTypeAndDropsNonRestricted() {

@@ -103,9 +103,12 @@ enum BtaConsent {
     /// parsed into `{purposeId: {vendorId: type}}` (non-`0/1/2` chars dropped), `ready`/`cmpuishown`
     /// when decoded grants are not yet written, and no fabricated GVL metadata.
     static func buildTcData(_ inp: TcfInputs) -> TcfSnapshot {
-        // The required decoded grants Prebid reads are purpose AND vendor consents; if either is
-        // not yet written the CMP is mid-update, so the snapshot is not ready.
-        let ready = inp.purposeConsents != nil && inp.vendorConsents != nil
+        // Ready only when the decoded grants Prebid reads (purpose AND vendor) are written, and —
+        // when GDPR applies — a non-empty TC string is present. Prebid rejects an empty TC string
+        // under GDPR, so an empty one must report a not-ready status, never `tcloaded`.
+        let ready = inp.purposeConsents != nil &&
+            inp.vendorConsents != nil &&
+            (!inp.gdprApplies || !inp.tcString.isEmpty)
 
         func bits(_ s: String?) -> [String: Bool] {
             guard let s = s else { return [:] }
