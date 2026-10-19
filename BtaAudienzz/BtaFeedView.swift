@@ -318,7 +318,12 @@ public final class BtaFeedView: UIView {
         // consent management), and whether a resolved consent was present.
         bridgeInjectedAtLoad = BtaConsent.hasCmpData
         consentWasResolved = bridgeInjectedAtLoad && BtaConsent.updateSnapshot.ready
-        webView.loadHTMLString(html, baseURL: URL(string: Self.cdnBaseURL))
+        // Use the hosting page URL as the WebView base so window.location (and bidder rd_ref, e.g.
+        // AppNexus) reflect the article's origin rather than the CDN — otherwise bidders reject
+        // cdn.adnz.co as the page and return no fill. Falls back to the CDN when no valid pageUrl.
+        let baseURL = URL(string: params.pageUrl).flatMap { ($0.scheme?.hasPrefix("http") == true) ? $0 : nil }
+            ?? URL(string: Self.cdnBaseURL)
+        webView.loadHTMLString(html, baseURL: baseURL)
     }
 
     /// Release resources. Call from `viewWillDisappear` or the owning object's `deinit`.

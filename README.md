@@ -24,7 +24,7 @@ Or add it to `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/audienzz/bta-audienzz-ios-sdk", from: "0.1.15"),
+    .package(url: "https://github.com/audienzz/bta-audienzz-ios-sdk", from: "0.1.16"),
 ],
 targets: [
     .target(name: "YourTarget", dependencies: ["BtaAudienzz"]),
